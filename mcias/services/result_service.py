@@ -26,7 +26,7 @@ def project_line(claim, snapshot):
     item={'line_id':claim.id,'invoice_number':claim.claim_reference,'provider_code':claim.provider_code,
         'service_code':claim.service_code,'service_date':claim.service_date.isoformat(),
         'currency':claim.currency,'claimed_net':number(amount(claim.claimed_amount)),
-        'bucket':'held','reason':'not_audited','audited':False,'proposed_net':None,
+        'bucket':'held','reason':'not_audited','reasons':['not_audited'],'audited':False,'proposed_net':None,
         'proposed_difference':None,'audit_snapshot_id':snapshot.id if snapshot else None,
         'source_locator':claim.source_locator,'source_record_id':claim.extracted_record_id,
         'source_values':claim.source_values,'financially_final':False}
@@ -35,26 +35,34 @@ def project_line(claim, snapshot):
         raise ReportBlocked('Audit evidence scope mismatch')
     item['audited']=True
     findings=snapshot.findings.get('agents',[]) if isinstance(snapshot.findings,dict) else []
-    if any(isinstance(f,dict) and f.get('status')=='review' for f in findings):
-        return {**item,'bucket':'review','reason':'unresolved_review_finding'}
+    finding_reasons=[{'source':f.get('agent','audit'),'code':f.get('reason') or f.get('status'),
+        'message':f.get('reason') or f.get('status')} for f in findings
+        if isinstance(f,dict) and f.get('status') not in ('pass',None)]
+    if finding_reasons:
+        return {**item,'bucket':'review','reason':'unresolved_review_finding','reasons':finding_reasons}
     calculation=snapshot.calculation
     if not isinstance(calculation,dict) or calculation.get('status')!='calculated':
-        return {**item,'reason':'missing_reference_or_evidence'}
+        code=(calculation.get('reason') if isinstance(calculation,dict) else None) or 'missing_reference_or_evidence'
+        return {**item,'reason':code,'reasons':[{'source':'rules','code':code,'message':code}]}
     independently=verify(claim,findings,calculation,policy_fingerprint=snapshot.policy_fingerprint,
         policy_id=snapshot.policy_id,reference_check=snapshot.findings.get('reference_check'))
     if independently['status']!='verified' or not isinstance(snapshot.verification,dict) or snapshot.verification.get('status')!='verified':
-        return {**item,'bucket':'review','reason':'verification_failed'}
+        return {**item,'bucket':'review','reason':'verification_failed',
+            'reasons':[{'source':'independent_verification','code':'verification_failed','message':'verification_failed'}]}
     # Old snapshots do not declare whether copay was already paid. They must
     # not silently become a second copay deduction on the owner's NET input.
     if calculation.get('amount_basis')!='NET':
-        return {**item,'bucket':'review','reason':'net_basis_confirmation_required'}
+        return {**item,'bucket':'review','reason':'net_basis_confirmation_required',
+            'reasons':[{'source':'financial_basis','code':'net_basis_confirmation_required','message':'net_basis_confirmation_required'}]}
     steps=calculation.get('deductions',[])
     if any(s.get('rule')=='copay' and amount(s.get('deduction'))!=0 for s in steps):
-        return {**item,'bucket':'review','reason':'possible_second_copay_deduction'}
+        return {**item,'bucket':'review','reason':'possible_second_copay_deduction',
+            'reasons':[{'source':'financial_basis','code':'possible_second_copay_deduction','message':'possible_second_copay_deduction'}]}
     claimed=amount(claim.claimed_amount);payable=amount(calculation['payable'])
     difference=claimed-payable
+    code='proven_financial_difference' if difference>0 else 'verified_match'
     return {**item,'bucket':'rejected' if difference>0 else 'accepted',
-        'reason':'proven_financial_difference' if difference>0 else 'verified_match',
+        'reason':code,'reasons':[{'source':'rules','code':code,'message':code}],
         'proposed_net':number(payable),'proposed_difference':number(difference)}
 
 
@@ -100,12 +108,16 @@ def freeze(db,actor,batch_id):
         for row in rows:
             outcome=outcomes.get(row['line_id'])
             if outcome and outcome['bucket'] in ('held','review'):
-                row.update(bucket=outcome['bucket'],reason=outcome['reason'],proposed_net=None,proposed_difference=None)
+                reasons=list(row.get('reasons',[]));reasons.append({'source':'audit_run','code':outcome['reason'],'message':outcome['reason']})
+                if outcome.get('detail'):reasons.append({'source':'audit_run','code':'additional_detail','message':outcome['detail']})
+                row.update(bucket=outcome['bucket'],reason=outcome['reason'],reasons=reasons,
+                    proposed_net=None,proposed_difference=None)
         from mcias.services.invoice_service import invoices
         for claim,row in zip(claims,rows):
             evidence=invoices(db,claim);row['invoices']=evidence
             if not evidence:
                 row.update(bucket='held',reason='missing_invoice',reason_ar='نقص المرفقات — فاتورة الخدمة غير متوفرة',
+                    reasons=[{'source':'evidence','code':'missing_invoice','message':'فاتورة الخدمة غير متوفرة'}],
                     audited=False,proposed_net=None,proposed_difference=None)
             else:
                 snapshot=snapshots.get(claim.id)
@@ -113,9 +125,11 @@ def freeze(db,actor,batch_id):
                 if isinstance(calculation,dict) and calculation.get('amount_basis')=='NET' and calculation.get('invoice_evidence')!=evidence:
                     row.update(bucket='review',reason='invoice_evidence_changed_reaudit_required',
                         reason_ar='تغيرت أدلة الفاتورة بعد التدقيق — يلزم إعادة تدقيق معتمدة',
+                        reasons=[{'source':'evidence','code':'invoice_evidence_changed_reaudit_required',
+                            'message':'تغيرت أدلة الفاتورة بعد التدقيق — يلزم إعادة تدقيق معتمدة'}],
                         proposed_net=None,proposed_difference=None)
         summary=partition(rows,[claim.id for claim in claims])
-        dataset={'schema':'mcias-four-results-v1','batch_id':batch.id,'organization_id':actor.organization_id,
+        dataset={'schema':'mcias-preliminary-results-v2','batch_id':batch.id,'organization_id':actor.organization_id,
             'source_sha256':batch.source_sha256,'stage':'preliminary','rows':rows,'summary':summary}
         digest=sha256(canonical(dataset)).hexdigest()
         previous=db.scalar(_events(db,actor.organization_id).where(AuditLog.details['fingerprint'].as_string()==digest).limit(1))

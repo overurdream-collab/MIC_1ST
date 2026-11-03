@@ -76,9 +76,9 @@ def test_one_complete_cycle_with_real_invoice_policy_snapshot_approval_and_expor
     result,raw=result_files(api,batch.batch_id)
     assert result['summary']['counts']==run['counts'] and result['financially_final'] is False
     with ZipFile(BytesIO(raw)) as archive:
-        assert set(archive.namelist())=={'accepted.xlsx','rejected.xlsx','held.xlsx','review.xlsx'}
+        assert set(archive.namelist())=={'accepted.xlsx','requires_review.xlsx'}
         assert load_workbook(BytesIO(archive.read('accepted.xlsx')),read_only=True).active.max_row==2
-        assert all(load_workbook(BytesIO(archive.read(key+'.xlsx')),read_only=True).active.max_row==1 for key in ('rejected','held','review'))
+        assert load_workbook(BytesIO(archive.read('requires_review.xlsx')),read_only=True).active.max_row==4
     assert_source_unchanged(api,batch)
 
 

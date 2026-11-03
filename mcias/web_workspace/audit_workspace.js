@@ -30,33 +30,14 @@ export function auditWorkspace(ctx) {
   }
 
   async function mapColumns(id){
-    const body=el('div');body.append(loading());openDrawer(L('ربط أعمدة الشركة','Map insurer columns'),body);
-    try{const source=await api.request(`/api/v1/claims/batches/${id}/columns`),form=el('form'),controls={};
-      const labels={claim_reference:['رقم الفاتورة','Invoice number'],beneficiary_token:['الرقم التأميني للمستفيد','Beneficiary insurance number'],provider_code:['مقدم الخدمة','Provider'],service_code:['الخدمة','Service'],service_date:['تاريخ الخدمة','Service date'],claimed_amount:['الصافي بعد التحمل','Net after copay']};
-      const aliases={claim_reference:['claim_reference','رقم الفاتورة'],beneficiary_token:['beneficiary_token','الرقم التأميني'],provider_code:['provider_code','مقدم الخدمة'],service_code:['service_code','الخدمة'],service_date:['service_date','تاريخ الخدمة'],claimed_amount:['claimed_amount','الصافي']};
-      form.append(el('p',L('تأكد من اختيار الصافي، وليس المطلوب قبل التحمل. كل صف يمثل بند خدمة مستقلًا.','Select NET, not the gross requested amount. Each row represents one service line.')));
-      for(const [key,label] of Object.entries(labels)){
-        const control=field('map-'+key,L(...label),{options:[['',L('اختر العمود','Select column')],...source.columns.map(name=>[name,name])]});
-        control.input.value=source.mapping?.columns?.[key]||aliases[key].find(name=>source.columns.includes(name))||'';controls[key]=control.input;form.append(control.wrap);
-      }
-      const extra={beneficiary_name:[['اسم المستفيد','Beneficiary name'],['اسم المستفيد','اسم المشترك']],
-        category_code:[['الفئة الواردة','Source category'],['الدرجة','الفئة']],gross_amount:[['المطلوب قبل التحمل','Gross before copay'],['المطلوب']],
-        unit_price:[['سعر الوحدة قبل التحمل','Gross unit price'],['السعر','سعر الوحدة']],copay_percent:[['نسبة تحمل المستفيد','Beneficiary copay percentage'],['نسبة التحمل']],
-        copay_amount:[['مبلغ التحمل في الملف','Source copay amount'],['إجمالي التحمل','مبلغ التحمل']],quantity:[['الكمية إن وجدت — الافتراضي وحدة واحدة','Quantity if provided — otherwise one unit'],['الكمية']],
-        total_amount:[['الإجمالي الصافي للصف إن وجد','Row net total if provided'],['الإجمالي الصافي']]};
-      form.append(el('h3',L('أعمدة الفحص مقابل المدخلات','Reference validation columns')));
-      for(const [key,[label,names]] of Object.entries(extra)){
-        const control=field('map-'+key,L(...label),{required:false,options:[['',L('غير متوفر / اختر العمود','Unavailable / select column')],...source.columns.map(name=>[name,name])]});
-        control.input.value=source.mapping?.columns?.[key]||names.find(name=>source.columns.includes(name))||'';controls[key]=control.input;form.append(control.wrap);
-      }
-      const currency=field('map-currency',L('العملة — مثل LYD أو SAR','Currency — e.g. LYD or SAR'),{pattern:'[A-Z]{3}',maxLength:3,value:source.mapping?.currency||''});
-      const date=field('map-date',L('صيغة التاريخ','Date format'),{options:[['ISO','YYYY-MM-DD'],['DMY','DD/MM/YYYY'],['YMD_SLASH','YYYY/MM/DD']]});date.input.value=source.mapping?.date_format||'ISO';
-      const feedback=el('div'),save=el('button',L('تأكيد الربط والمعاينة','Confirm mapping and preview'),'button primary');save.type='submit';form.append(currency.wrap,date.wrap,save,feedback);
-      form.addEventListener('submit',async event=>{event.preventDefault();if(save.disabled||!form.reportValidity())return;save.disabled=true;try{
-        await api.request(`/api/v1/claims/batches/${id}/mapping`,{method:'PUT',body:{columns:Object.fromEntries(Object.entries(controls).filter(([,input])=>input.value).map(([key,input])=>[key,input.value])),currency:currency.input.value,date_format:date.input.value}});
-        document.getElementById('drawer').close();await showBatch();
-      }catch(error){feedback.replaceChildren(errorState(error));}finally{save.disabled=false;}});body.replaceChildren(form);
-    }catch(error){body.replaceChildren(errorState(error));}
+    const columns={claim_reference:'رقم الفاتورة',beneficiary_token:'الرقم التأميني',beneficiary_name:'اسم المستفيد',
+      category_code:'الدرجة',provider_code:'مقدم الخدمة',service_code:'الخدمة',service_date:'تاريخ الخدمة',
+      unit_price:'السعر',gross_amount:'المطلوب',copay_percent:'نسبة التحمل',copay_amount:'إجمالي التحمل',claimed_amount:'الصافي'};
+    try{
+      await api.request(`/api/v1/claims/batches/${id}/mapping`,{method:'PUT',body:{columns,currency:'LYD',date_format:'DMY'}});
+      toast(L('تم التعرف على قالب المطالبات المعتمد دون ربط يدوي للأعمدة.','Approved claim template detected; no manual column mapping was needed.'));
+      await showBatch();
+    }catch(error){toast(error.message);}
   }
 
   function attachInvoice(batch,entries){
@@ -78,24 +59,30 @@ export function auditWorkspace(ctx) {
     content.replaceChildren(loading());try{
       const batch=await api.request(`/api/v1/claims/batches/${id}`),page=await api.request(`/api/v1/claims/batches/${id}/entries?limit=100`);
       const body=el('div');body.append(badge(batch.status),el('p',`${L('السجلات المستوردة','Imported records')}: ${batch.imported_count}/${batch.record_count}`),el('code',batch.source_sha256));
+      if(batch.status==='invalid_source')body.append(panel(L('الملف يحتاج إلى تصحيح','Workbook needs correction'),L('لم يُستورد أي بند. صحح الصفوف التي ظهرت في رسالة الفحص ثم ارفع نسخة جديدة من ملف Excel.','No claim lines were imported. Correct the rows listed by validation and upload a new Excel file.')));
       const actions=el('div',null,'actions');
-      if(can('claims.import')&&batch.imported_count===0)actions.append(button(L('ربط أعمدة الشركة','Map insurer columns'),()=>void mapColumns(id)));
-      if(can('claims.import')&&batch.status!=='imported')actions.append(button(L('معاينة واستكمال الاستيراد','Preview and complete import'),async()=>{
+      if(can('claims.import')&&batch.imported_count===0&&batch.status==='staged')actions.append(button(L('استخدام قالب المطالبات المعتمد','Use approved claims template'),()=>void mapColumns(id)));
+      if(can('claims.import')&&['staged','importing','review_required'].includes(batch.status))actions.append(button(L('فحص الملف واستيراده بالكامل','Validate and import the complete workbook'),async()=>{
         const target=el('div');target.append(loading());openDrawer(L('معاينة الاستيراد','Import preview'),target);
         try{const preview=await api.request(`/api/v1/claims/batches/${id}/preview?limit=100`);target.replaceChildren(el('p',`${L('السجلات','Records')}: ${preview.record_count}`));
           for(const row of preview.rows)target.append(el('p',`${row.record_id.slice(0,8)} · ${row.valid?L('صالح','Valid'):row.reason}`));
-          const resume=button(L('تأكيد استيراد الصفوف الصالحة','Confirm import of valid rows'),async()=>{resume.disabled=true;try{let result;do{result=await api.request(`/api/v1/claims/batches/${id}/resume`,{method:'POST'});target.append(el('p',`${result.imported_count}/${result.record_count}`));}while(result.status==='importing');await batches(id);
-            if(result.status==='review_required')target.append(el('p',L('توجد صفوف تحتاج تصحيحًا؛ لم تُحذف ولم تُحتسب كمدققة.','Some rows need correction; they remain preserved and unaudited.')));
+          const resume=button(L('فحص الملف ثم الاستيراد','Validate then import'),async()=>{resume.disabled=true;try{let result;do{result=await api.request(`/api/v1/claims/batches/${id}/resume`,{method:'POST'});target.append(el('p',`${result.imported_count}/${result.record_count}`));}while(result.status==='importing');await batches(id);
+            if(result.status==='invalid_source'){
+              target.replaceChildren(el('h3',L('لم يُستورد الملف','Workbook was not imported')),
+                el('p',L('صحح الصفوف المحددة في ملفك الأصلي ثم ارفع الملف من جديد. لم يُستورد أي بند.','Correct the listed rows in the original workbook and upload it again. No claim lines were imported.')));
+              for(const item of result.rejected||[])target.append(el('p',`${item.locator?.row||item.record_id}: ${item.reason}`));
+            }
             else document.getElementById('drawer').close();}catch(error){target.append(errorState(error));}finally{resume.disabled=false;}},'button primary');target.append(resume);
         }catch(error){target.replaceChildren(errorState(error));}}));
       if(can('ingestion.upload')&&can('claims.import')&&page.entries.length)actions.append(button(L('إضافة فاتورة أو مرفق','Add invoice or attachment'),()=>attachInvoice(batch,page.entries)));
-      if(can('reports.create')&&batch.status==='imported')actions.append(button(L('تجهيز ملفات النتائج الأربعة','Prepare four result files'),async()=>{
+      if(can('reports.create')&&batch.status==='imported')actions.append(button(L('تجهيز ملفي النتائج','Prepare the two result files'),async()=>{
         try{await api.request('/api/v1/result-files/batches/'+id,{method:'POST'});ctx.navigate(ctx.scope==='admin'?'/admin/result-reports':'/institution/result-reports');}
         catch(error){toast(error.message);}}));
       if(can('claims.review')&&batch.status==='imported'){
         const run=button(L('بدء التدقيق','Start audit'),async()=>{run.disabled=true;try{
           const result=await api.request(`/api/v1/audits/batches/${id}/run`,{method:'POST'});
-          const out=panel(L('نتيجة دورة التدقيق','Audit cycle result'),Object.entries(result.counts).map(([key,value])=>`${key}: ${value}`).join(' · '));
+          const actionCount=(result.counts.rejected||0)+(result.counts.held||0)+(result.counts.review||0);
+          const out=panel(L('نتيجة دورة التدقيق','Audit cycle result'),`${L('مطابق مبدئيًا','Preliminary matches')}: ${result.counts.accepted||0} · ${L('يحتاج مراجعة أو رفضًا','Needs review or rejection')}: ${actionCount}`);
           body.append(out);toast(L('حُفظت النتائج؛ غياب الفاتورة أو السياسة المعتمدة يبقي البند معلقًا.','Results recorded; missing invoices or approved policy keep a line held.'));
         }catch(error){toast(error.message);}finally{run.disabled=false;}},'button primary');actions.append(run);
       }
@@ -110,19 +97,28 @@ export function auditWorkspace(ctx) {
 }
 
 export function resultReports(ctx){
-  const {root,api,context}=ctx;root.append(panel(L('ملفات النتائج الأربعة','Four result files'),L('كل بند في ملف واحد. النتائج مبدئية، والأصل محفوظ دون تعديل.','Each line has one file. Outcomes are preliminary and the original is unchanged.')));
+  const {root,api,context}=ctx;root.append(panel(L('ملفا النتائج','Result files'),L('الأخضر للمطابق مبدئيًا، والأحمر لكل بند يحتاج تدقيقًا بشريًا أو رفضًا. تظهر أسباب الحالة داخل الملف، وكل بند يرد مرة واحدة. النتائج ليست اعتمادًا ماليًا نهائيًا.','Green contains preliminary matches; red contains lines requiring human review or rejection with reasons. Each line appears once. These are not final financial approvals.')));
   const content=el('div');root.append(content);let offset=0;
-  const names={accepted:['مقبول مبدئيًا','Preliminarily accepted'],rejected:['مرفوض مبدئيًا','Preliminarily rejected'],held:['معلّق','Held'],review:['يحتاج مراجعة','Needs review']};
+  const names={accepted:['مطابق مبدئيًا','Preliminary match'],rejected:['مرفوض مبدئيًا','Preliminary rejection'],held:['ناقص أو متعذر التحقق','Incomplete or unverifiable'],review:['يحتاج مراجعة بشرية','Needs human review']};
+  const reasonLabels={not_audited:'لم يُدقّق بعد',missing_invoice:'فاتورة الخدمة غير مرفقة',
+    missing_or_ambiguous_signed_policy:'لا توجد سياسة معتمدة وحيدة لهذه المطالبة',
+    unresolved_reference_or_evidence:'مرجع أو دليل لازم غير مكتمل',policy_or_evidence_blocked:'تعذر التحقق من السياسة أو الدليل',
+    unresolved_review_finding:'توجد ملاحظة تتطلب مراجعة بشرية',verification_failed:'فشل التحقق المستقل',
+    net_basis_confirmation_required:'يلزم تأكيد أن المبلغ صافي بعد التحمل',
+    possible_second_copay_deduction:'احتمال خصم التحمل مرتين',proven_financial_difference:'ثبت وجود فرق مالي',
+    verified_match:'اجتاز الفحص المبدئي',invoice_evidence_changed_reaudit_required:'تغيرت الفاتورة بعد التدقيق؛ يلزم إعادة التدقيق'};
   async function show(result){const body=el('div');body.append(loading());openDrawer(L('بنود النتائج','Result lines'),body);try{const page=await api.request(`/api/v1/result-files/${result.id}/lines?limit=100`);body.replaceChildren();
-    for(const row of page.items){const item=panel(`${row.invoice_number} · ${L(...names[row.bucket])}`,`${row.service_code} · ${row.claimed_net} ${row.currency} · ${row.reason}`);item.append(el('p',L(row.audited?'له لقطة تدقيق':'لم يُدقق بعد',row.audited?'Audit snapshot exists':'Not audited yet')));
+    for(const row of page.items){const reasons=(row.reasons||[]).map(reason=>{const code=typeof reason==='string'?reason:(reason.code||reason.message);const message=typeof reason==='string'?reason:(reason.message||code);return reasonLabels[message]||reasonLabels[code]||message;}).filter(Boolean).join('؛ ');const item=panel(`${row.invoice_number} · ${L(...names[row.bucket])}`,`${row.service_code} · ${row.claimed_net} ${row.currency} · ${reasons||reasonLabels[row.reason]||row.reason}`);item.append(el('p',L(row.audited?'له لقطة تدقيق':'لم يُدقّق بعد',row.audited?'Audit snapshot exists':'Not audited yet')));
       if(row.audit_snapshot_id)item.append(button(L('الأدلة والحسابات','Evidence and calculations'),async()=>{try{const snapshot=await api.request('/api/v1/audits/'+row.audit_snapshot_id);const pre=el('pre',JSON.stringify(snapshot,null,2));openDrawer(L('لقطة التدقيق','Audit snapshot'),pre);}catch(error){toast(error.message);}}));body.append(item);}
     if(page.has_more)body.append(el('p',L('تُعرض أول 100 نتيجة؛ التنزيل يشمل كامل المجموعة.','Showing the first 100 lines; download covers the complete set.')));
   }catch(error){body.replaceChildren(errorState(error));}}
   async function load(){content.replaceChildren(loading());try{const page=await api.request(`/api/v1/result-files?offset=${offset}&limit=25`);const list=el('div');
-    for(const result of page.items){const card=panel(`${result.batch_id.slice(0,8)} · ${L('نتائج مبدئية','Preliminary results')}`,L('عدد البنود: ','Lines: ')+result.summary.total_lines);
-      for(const [key,label] of Object.entries(names))card.append(el('p',`${L(...label)}: ${result.summary.counts[key]}`));
+    for(const result of page.items){const counts=result.summary.counts,actionCount=(counts.rejected||0)+(counts.held||0)+(counts.review||0);const card=panel(`${L('نتائج مبدئية','Preliminary results')} · ${L('عدد البنود: ','Lines: ')}${result.summary.total_lines}`,'');
+      card.append(el('p',`${L('المقبول مبدئيًا — الملف الأخضر','Preliminary matches — green file')}: ${counts.accepted||0}`));
+      card.append(el('p',`${L('يحتاج مراجعة أو رفضًا — الملف الأحمر','Needs review or rejection — red file')}: ${actionCount}`));
+      card.append(el('p',`${L('التفصيل: مرفوض','Details: rejected')}: ${counts.rejected||0} · ${L('ناقص','held')}: ${counts.held||0} · ${L('مراجعة بشرية','human review')}: ${counts.review||0}`));
       const actions=el('div',null,'actions');if(context.permissions.includes('claims.read'))actions.append(button(L('عرض البنود والأدلة','View lines and evidence'),()=>void show(result)));
-      const download=button(L('تنزيل الملفات الأربعة','Download four files'),async()=>{try{saveBlob(await api.request(`/api/v1/result-files/${result.id}/download`,{download:true}),`mcias-four-results-${result.id}.zip`);}catch(error){toast(error.message);}});download.disabled=!context.permissions.includes('reports.export');actions.append(download);card.append(actions);list.append(card);}
+      const download=button(L('تنزيل ملفي النتائج','Download both result files'),async()=>{try{saveBlob(await api.request(`/api/v1/result-files/${result.id}/download`,{download:true}),`mcias-two-results-${result.id}.zip`);}catch(error){toast(error.message);}});download.disabled=!context.permissions.includes('reports.export');actions.append(download);card.append(actions);list.append(card);}
     const pagination=el('div',null,'actions');if(offset)pagination.append(button(L('السابق','Previous'),()=>{offset-=25;void load();}));if(page.has_more)pagination.append(button(L('التالي','Next'),()=>{offset+=25;void load();}));
     content.replaceChildren(page.items.length?list:empty(L('لا نتائج محفوظة','No frozen results'),L('جهّز النتائج من دفعة مكتملة الاستيراد في قسم التدقيق.','Prepare results from a fully imported batch in Audit.')),pagination);
   }catch(error){content.replaceChildren(errorState(error,()=>void load()));}}void load();

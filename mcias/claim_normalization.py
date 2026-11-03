@@ -6,8 +6,51 @@ import re
 FIELDS=("claim_reference","beneficiary_token","provider_code","service_code",
         "service_date","claimed_amount","currency")
 
+# The laptop edition deliberately accepts one published workbook layout. This
+# keeps imports reproducible and removes per-batch column mapping from the UI.
+FIXED_COLUMNS={
+    "claim_reference":"رقم الفاتورة",
+    "beneficiary_token":"الرقم التأميني",
+    "beneficiary_name":"اسم المستفيد",
+    "category_code":"الدرجة",
+    "provider_code":"مقدم الخدمة",
+    "service_code":"الخدمة",
+    "service_date":"تاريخ الخدمة",
+    "unit_price":"السعر",
+    "gross_amount":"المطلوب",
+    "copay_percent":"نسبة التحمل",
+    "copay_amount":"إجمالي التحمل",
+    "claimed_amount":"الصافي",
+}
+FIXED_HEADERS=tuple(FIXED_COLUMNS.values())
+
 class ClaimValidationError(ValueError):
     pass
+
+def validate_fixed_record(values: dict) -> None:
+    """Validate required template cells before any claim row is imported."""
+    if not isinstance(values,dict):
+        raise ClaimValidationError("record is not a mapping")
+    missing=[header for header in FIXED_HEADERS
+             if header not in values or values[header] is None or not str(values[header]).strip()]
+    if missing:
+        raise ClaimValidationError("missing required cells: "+", ".join(missing))
+    raw_date=str(values[FIXED_COLUMNS["service_date"]]).strip()
+    try:
+        datetime.strptime(raw_date,"%d/%m/%Y")
+    except ValueError:
+        raise ClaimValidationError("service date must use DD/MM/YYYY") from None
+    for field in ("unit_price","gross_amount","copay_amount","claimed_amount"):
+        try:
+            source_decimal(values[FIXED_COLUMNS[field]])
+        except ClaimValidationError as exc:
+            raise ClaimValidationError(f"invalid {FIXED_COLUMNS[field]}: {exc}") from None
+    try:
+        percent=source_decimal(values[FIXED_COLUMNS["copay_percent"]],allow_percent=True)
+    except ClaimValidationError as exc:
+        raise ClaimValidationError(f"invalid {FIXED_COLUMNS['copay_percent']}: {exc}") from None
+    if percent>100:
+        raise ClaimValidationError("copay percentage must be between 0 and 100")
 
 def source_decimal(value, *, allow_percent=False):
     """Accept explicit decimal amounts and unambiguous three-digit grouping."""

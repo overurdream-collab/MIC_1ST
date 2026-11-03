@@ -126,20 +126,44 @@ def render_pdf(report):
     return output.getvalue()
 
 def render_result_partition(dataset, bucket):
-    """One sheet, one category, one row per source line; no duplicate all-claims file."""
+    """Render the green preliminary match file or the complete red action file."""
     from mcias.services.result_service import BUCKETS, LABELS, partition
-    if bucket not in BUCKETS:raise ReportBlocked('Unsupported output category')
+    if bucket not in (*BUCKETS,'requires_review'):raise ReportBlocked('Unsupported output category')
     partition(dataset['rows'],[row['line_id'] for row in dataset['rows']])
-    wb=Workbook();sheet=wb.active;sheet.title=LABELS[bucket];sheet.sheet_view.rightToLeft=True
+    label=LABELS.get(bucket,'مراجعة بشرية أو مرفوض')
+    wb=Workbook();sheet=wb.active;sheet.title=label;sheet.sheet_view.rightToLeft=True
     columns=[('line_id','معرف البند'),('invoice_number','رقم الفاتورة'),('provider_code','مقدم الخدمة'),
         ('service_code','الخدمة'),('service_date','تاريخ الخدمة'),('currency','العملة'),
         ('claimed_net','الصافي الأصلي'),('proposed_net','الصافي المقترح'),
         ('proposed_difference','الفرق المقترح'),('reason','سبب النتيجة'),('audited','تم تدقيقه'),
         ('audit_snapshot_id','مرجع لقطة التدقيق'),('source_record_id','سجل المصدر')]
+    target_fill='15803D' if bucket=='accepted' else 'B91C1C'
+    reason_labels={'not_audited':'لم يُدقّق بعد','missing_invoice':'فاتورة الخدمة غير مرفقة',
+        'missing_or_ambiguous_signed_policy':'لا توجد سياسة معتمدة وحيدة لهذه المطالبة',
+        'unresolved_reference_or_evidence':'مرجع أو دليل لازم غير مكتمل',
+        'policy_or_evidence_blocked':'تعذر التحقق من السياسة أو الدليل',
+        'unresolved_review_finding':'توجد ملاحظة تتطلب مراجعة بشرية',
+        'verification_failed':'فشل التحقق المستقل',
+        'net_basis_confirmation_required':'يلزم تأكيد أن المبلغ صافي بعد التحمل',
+        'possible_second_copay_deduction':'احتمال خصم التحمل مرتين',
+        'proven_financial_difference':'ثبت وجود فرق مالي','verified_match':'اجتاز الفحص المبدئي',
+        'invoice_evidence_changed_reaudit_required':'تغيرت الفاتورة بعد التدقيق؛ يلزم إعادة التدقيق'}
     for col,(_,title) in enumerate(columns,1):
-        cell=_text_cell(sheet,1,col,title);cell.font=Font(bold=True,color='FFFFFF');cell.fill=PatternFill('solid',fgColor='243B53')
-    for row_index,row in enumerate((r for r in dataset['rows'] if r['bucket']==bucket),2):
-        for col,(key,_) in enumerate(columns,1):_text_cell(sheet,row_index,col,row.get('reason_ar',row.get(key)) if key=='reason' else row.get(key))
+        cell=_text_cell(sheet,1,col,title);cell.font=Font(bold=True,color='FFFFFF');cell.fill=PatternFill('solid',fgColor=target_fill)
+    selected=(r for r in dataset['rows'] if (r['bucket']=='accepted' if bucket=='accepted' else r['bucket']!='accepted'))
+    for row_index,row in enumerate(selected,2):
+        for col,(key,_) in enumerate(columns,1):
+            if key=='reason':
+                reasons=row.get('reasons') or []
+                def label(reason):
+                    if isinstance(reason,dict):
+                        code=str(reason.get('code',''));message=str(reason.get('message',code))
+                        return reason_labels.get(message,reason_labels.get(code,message))
+                    return reason_labels.get(str(reason),str(reason))
+                value='؛ '.join(label(reason) for reason in reasons)
+                value=row.get('reason_ar') if len(reasons)<=1 and row.get('reason_ar') else value or row.get(key)
+            else:value=row.get(key)
+            _text_cell(sheet,row_index,col,value)
     sheet.freeze_panes='A2';sheet.auto_filter.ref=sheet.dimensions
     for col in sheet.columns:sheet.column_dimensions[col[0].column_letter].width=24
     sheet.sheet_properties.pageSetUpPr.fitToPage=True

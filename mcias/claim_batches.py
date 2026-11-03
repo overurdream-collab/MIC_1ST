@@ -1,10 +1,11 @@
-"""G4 batch import with explicit staging, row-level rejection, and idempotent resume."""
+"""G4 batch import with fixed-template validation and all-or-nothing row acceptance."""
 from sqlalchemy import select, func
 from sqlalchemy.exc import IntegrityError
 from mcias.models import AuditLog
 from mcias.models_ingestion import IngestionDocument, IngestionJob, ExtractedSourceRecord, QuarantineItem
 from mcias.models_claims import ClaimBatch, ClaimEntry, ClaimAttachment
-from mcias.claim_normalization import normalize, ClaimValidationError
+from mcias.claim_normalization import (normalize, validate_fixed_record,
+    ClaimValidationError, FIXED_COLUMNS, FIXED_HEADERS)
 
 class BatchConflict(ValueError):
     pass
@@ -39,6 +40,13 @@ def stage(db,actor,document_id):
         ExtractedSourceRecord.job_id==job.id))
     if not count:
         raise BatchConflict("source has no extracted records")
+    first=db.scalar(select(ExtractedSourceRecord).where(ExtractedSourceRecord.job_id==job.id)
+        .order_by(ExtractedSourceRecord.id).limit(1))
+    headers=tuple(first.values) if first and isinstance(first.values,dict) else ()
+    if len(headers)!=len(FIXED_HEADERS) or set(headers)!=set(FIXED_HEADERS):
+        missing=sorted(set(FIXED_HEADERS)-set(headers));extra=sorted(set(headers)-set(FIXED_HEADERS))
+        raise BatchConflict("Workbook headers do not match the approved template; "
+            f"missing={','.join(missing) or '-'}; unexpected={','.join(extra) or '-'}")
     batch=ClaimBatch(organization_id=actor.organization_id,ingestion_document_id=doc.id,
         created_by=actor.id,source_sha256=doc.sha256,record_count=count,imported_count=0,status="staged")
     db.add(batch);db.flush()
@@ -81,15 +89,11 @@ def set_mapping(db,actor,batch_id,columns,currency,date_format):
         batch=db.scalar(select(ClaimBatch).where(ClaimBatch.id==batch_id,ClaimBatch.organization_id==actor.organization_id).with_for_update())
         if not batch or batch.imported_count:raise BatchConflict('Mapping must be confirmed before importing any row')
         allowed=set(source_columns(db,actor,batch_id)['columns'])
-        expected={'claim_reference','beneficiary_token','provider_code','service_code','service_date','claimed_amount'}
-        optional={'beneficiary_name','category_code','gross_amount','unit_price','copay_amount','copay_percent','quantity','total_amount'}
-        if (not expected<=set(columns) or not set(columns)<=expected|optional
-                or len({columns[k] for k in expected})!=len(expected) or not set(columns.values())<=allowed):
-            raise BatchConflict('Select a distinct source column for each required field')
-        if columns['claimed_amount'].strip() in ('المطلوب','إجمالي التحمل','التعويض'):
-            raise BatchConflict('Claim amount must map to the NET column, not gross or copay')
-        mapping={'organization_id':actor.organization_id,'batch_id':batch.id,'columns':columns,
-            'currency':currency,'date_format':date_format,'amount_basis':'NET','price_basis':'PER_UNIT_GROSS'}
+        if (columns!=FIXED_COLUMNS or set(allowed)!=set(FIXED_HEADERS)
+                or currency!='LYD' or date_format!='DMY'):
+            raise BatchConflict('This laptop edition accepts the approved fixed Excel template only')
+        mapping={'organization_id':actor.organization_id,'batch_id':batch.id,'columns':FIXED_COLUMNS,
+            'currency':'LYD','date_format':'DMY','amount_basis':'NET','price_basis':'PER_UNIT_GROSS'}
         object_id,digest=store().put(json.dumps(mapping,ensure_ascii=False,sort_keys=True).encode())
         source=SourceFile(sha256=digest,original_filename='claim-column-mapping.json',storage_key=object_id)
         db.add(source);db.flush()
@@ -109,6 +113,7 @@ def preview(db,actor,batch_id,limit=100,offset=0):
     mapping=confirmed_mapping(db,batch)
     for record in records:
         try:
+            validate_fixed_record(record.values)
             normalized=normalize(record.values,mapping)
             results.append({"record_id":record.id,"locator":record.locator,"valid":True,
                             "claim_reference":normalized["claim_reference"]})
@@ -141,22 +146,37 @@ def resume(db,actor,batch_id,chunk_size=100):
     already=set(db.scalars(select(ClaimEntry.extracted_record_id).where(ClaimEntry.batch_id==batch.id)).all())
     if chunk_size<=0 or chunk_size>1000:
         raise BatchConflict("invalid chunk size")
-    accepted=0
-    rejected=[]
     mapping=confirmed_mapping(db,batch)
+    if mapping is None or mapping.get('columns')!=FIXED_COLUMNS:
+        raise BatchConflict('The approved fixed template must be confirmed before import')
+    normalized_records={}
+    rejected=[]
     for record in records:
-        if record.id in already:
-            continue
         try:
-            values=normalize(record.values,mapping)
+            validate_fixed_record(record.values)
+            normalized_records[record.id]=normalize(record.values,mapping)
         except ClaimValidationError as exc:
             rejected.append({"record_id":record.id,"locator":record.locator,"reason":str(exc)})
+    if rejected:
+        if batch.imported_count:
+            raise BatchConflict("A partially imported legacy batch has validation errors; no new rows were imported")
+        batch.status="invalid_source"
+        db.add(AuditLog(actor_id=actor.id,action="claim_batch.validation_failed",resource_type="claim_batch",
+            resource_id=batch.id,details={"invalid_rows":len(rejected),"record_count":batch.record_count,
+                "source_sha256":batch.source_sha256}))
+        db.commit()
+        return {"batch_id":batch.id,"status":batch.status,"imported_count":0,
+            "record_count":batch.record_count,"rejected":rejected}
+    accepted=0
+    for record in records:
+        if record.id in already:
             continue
         if accepted>=chunk_size:
             break
         accepted+=1
         db.add(ClaimEntry(organization_id=actor.organization_id,batch_id=batch.id,
-            extracted_record_id=record.id,source_locator=record.locator,source_values=record.values,**values))
+            extracted_record_id=record.id,source_locator=record.locator,source_values=record.values,
+            **normalized_records[record.id]))
         batch.imported_count+=1
     db.flush()
     batch.imported_count=db.scalar(select(func.count()).select_from(ClaimEntry).where(ClaimEntry.batch_id==batch.id))

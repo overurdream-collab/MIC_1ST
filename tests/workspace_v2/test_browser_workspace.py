@@ -72,27 +72,22 @@ def test_five_sections_reference_tables_and_permissions_in_browser(workspace,mon
         page.locator('[name=claims-file]').set_input_files({'name':'SYN-browser-claims.xlsx',
             'mimeType':'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet','buffer':arabic_workbook()})
         page.get_by_role('button',name='رفع ومعاينة',exact=True).click()
-        page.locator('[name=map-currency]').fill('LYD')
-        page.locator('[name=map-date]').select_option('DMY')
-        assert page.locator('[name=map-claimed_amount]').input_value()=='الصافي'
-        page.get_by_role('button',name='تأكيد الربط والمعاينة',exact=True).click()
-        page.get_by_role('button',name='معاينة واستكمال الاستيراد',exact=True).click()
-        page.get_by_role('button',name='تأكيد استيراد الصفوف الصالحة',exact=True).click()
-        page.get_by_role('button',name='تجهيز ملفات النتائج الأربعة',exact=True).click()
-        page.get_by_role('button',name='تنزيل الملفات الأربعة',exact=True).wait_for()
+        page.get_by_role('button',name='فحص الملف واستيراده بالكامل',exact=True).click()
+        page.get_by_role('button',name='فحص الملف ثم الاستيراد',exact=True).click()
+        page.get_by_role('button',name='تجهيز ملفي النتائج',exact=True).click()
+        page.get_by_role('button',name='تنزيل ملفي النتائج',exact=True).wait_for()
         with page.expect_download() as event:
-            page.get_by_role('button',name='تنزيل الملفات الأربعة',exact=True).click()
+            page.get_by_role('button',name='تنزيل ملفي النتائج',exact=True).click()
         output=tmp_path/'results.zip';event.value.save_as(output)
         from zipfile import ZipFile
         with ZipFile(output) as archive:
-            assert set(archive.namelist())=={'accepted.xlsx','rejected.xlsx','held.xlsx','review.xlsx'}
+            assert set(archive.namelist())=={'accepted.xlsx','requires_review.xlsx'}
             from openpyxl import load_workbook
             from io import BytesIO
-            held=list(load_workbook(BytesIO(archive.read('held.xlsx')),read_only=True).active.values)
+            held=list(load_workbook(BytesIO(archive.read('requires_review.xlsx')),read_only=True).active.values)
             assert len(held)==5
             assert all('نقص المرفقات' in row[9] for row in held[1:])
-            for name in ('accepted.xlsx','rejected.xlsx','review.xlsx'):
-                assert load_workbook(BytesIO(archive.read(name)),read_only=True).active.max_row==1
+            assert load_workbook(BytesIO(archive.read('accepted.xlsx')),read_only=True).active.max_row==1
         assert any(path.endswith('/resume') and status==200 for _,path,status in responses)
         # A second, linked workbook exercises the actual category/service/network
         # resolver rather than manufactured financial snapshots.
@@ -101,13 +96,8 @@ def test_five_sections_reference_tables_and_permissions_in_browser(workspace,mon
         page.locator('[name=claims-file]').set_input_files({'name':'SYN-linked-reference-claims.xlsx',
             'mimeType':'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet','buffer':sample_workbook()})
         page.get_by_role('button',name='رفع ومعاينة',exact=True).click()
-        page.locator('[name=map-currency]').fill('LYD')
-        page.locator('[name=map-date]').select_option('DMY')
-        assert page.locator('[name=map-beneficiary_name]').input_value()=='اسم المستفيد'
-        assert page.locator('[name=map-copay_amount]').input_value()=='إجمالي التحمل'
-        page.get_by_role('button',name='تأكيد الربط والمعاينة',exact=True).click()
-        page.get_by_role('button',name='معاينة واستكمال الاستيراد',exact=True).click()
-        page.get_by_role('button',name='تأكيد استيراد الصفوف الصالحة',exact=True).click()
+        page.get_by_role('button',name='فحص الملف واستيراده بالكامل',exact=True).click()
+        page.get_by_role('button',name='فحص الملف ثم الاستيراد',exact=True).click()
         page.get_by_text('مطابق: 0 · اختلاف: 0 · ناقص: 4',exact=True).wait_for()
         assert page.get_by_role('button',name='بدء التدقيق',exact=True).is_visible()
         page.get_by_role('button',name='تفاصيل الفحص',exact=True).first.click()

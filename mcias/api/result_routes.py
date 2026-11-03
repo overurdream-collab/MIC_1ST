@@ -11,7 +11,7 @@ from mcias.services import result_service as service
 from mcias.reporting_g7 import ReportBlocked
 from mcias.report_exports_g7 import render_result_partition
 
-router=APIRouter(prefix='/api/v1/result-files',tags=['Four preliminary outputs'],dependencies=[Depends(no_store)])
+router=APIRouter(prefix='/api/v1/result-files',tags=['Preliminary result files'],dependencies=[Depends(no_store)])
 
 def perform(db,action):
     try:return action()
@@ -43,7 +43,7 @@ def download(result_id:UUID,actor=Depends(deps.require_permission('reports.expor
     dataset=perform(db,lambda:service.read(db,actor,str(result_id)))
     output=BytesIO()
     with ZipFile(output,'w',compression=ZIP_DEFLATED) as archive:
-        for bucket in service.BUCKETS:
-            archive.writestr(f'{bucket}.xlsx',render_result_partition(dataset,bucket))
+        archive.writestr('accepted.xlsx',render_result_partition(dataset,'accepted'))
+        archive.writestr('requires_review.xlsx',render_result_partition(dataset,'requires_review'))
     return Response(output.getvalue(),media_type='application/zip',headers={
-        'Content-Disposition':f'attachment; filename="mcias-four-results-{result_id}.zip"','Cache-Control':'no-store'})
+        'Content-Disposition':f'attachment; filename="mcias-two-results-{result_id}.zip"','Cache-Control':'no-store'})
