@@ -44,7 +44,8 @@ async def secure_response_headers(request: Request, call_next):
         response.headers["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none'"
     if request.url.path.startswith(("/api/v1/auth/", "/api/v1/reports/", "/api/v1/governance/", "/api/v1/audits/",
                                         "/api/v1/users", "/api/v1/groups", "/api/v1/permissions", "/api/v1/rbac/",
-                                        "/api/v1/rules/", "/api/v1/workspace/", "/api/v1/claims/", "/api/v1/ingestion/", "/api/v1/reference/", "/api/v1/audit-policies/", "/api/v1/report-explorer/", "/api/v1/intelligence/", "/ui/reports", "/ui/intelligence")):
+                                        "/api/v1/rules/", "/api/v1/workspace/", "/api/v1/claims/", "/api/v1/ingestion/", "/api/v1/reference/", "/api/v1/audit-policies/", "/api/v1/report-explorer/", "/api/v1/intelligence/",
+                                        "/api/v1/phase1/", "/ui/reports", "/ui/intelligence")):
         response.headers["Cache-Control"] = "no-store"
         response.headers["Pragma"] = "no-cache"
     return response
@@ -234,3 +235,5 @@ app.include_router(access_router)
 
 from mcias.api.result_routes import router as result_files_router
 app.include_router(result_files_router)
+from mcias.api.phase1_routes import router as phase1_rules_router
+app.include_router(phase1_rules_router)

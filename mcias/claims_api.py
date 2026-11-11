@@ -116,7 +116,8 @@ def batch_entries(batch_id:str,limit:int=Query(default=100,ge=1,le=500),
         ClaimEntry.organization_id==actor.organization_id).order_by(ClaimEntry.id)
         .offset(offset).limit(limit)).all()
     return {"batch_id":batch.id,"entries":[{"id":c.id,"claim_reference":c.claim_reference,
-        "source_locator":c.source_locator,"claimed_amount":str(c.claimed_amount),
+        "source_locator":c.source_locator,
+        "claimed_amount":None if c.claimed_amount is None else str(c.claimed_amount),
         "currency":c.currency,"service_date":c.service_date.isoformat()} for c in entries]}
 
 @router.post("/entries/{claim_id}/attachments/{document_id}",status_code=201)

@@ -1,6 +1,6 @@
 """G4 strict source-record normalization. No guessed clinical or monetary values."""
 from datetime import date, datetime
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 import re
 
 FIELDS=("claim_reference","beneficiary_token","provider_code","service_code",
@@ -23,15 +23,22 @@ FIXED_COLUMNS={
     "claimed_amount":"الصافي",
 }
 FIXED_HEADERS=tuple(FIXED_COLUMNS.values())
+REQUIRED_HEADERS=tuple(FIXED_COLUMNS[key] for key in (
+    "claim_reference","beneficiary_token","beneficiary_name","category_code",
+    "provider_code","service_code","service_date"))
 
 class ClaimValidationError(ValueError):
     pass
+
+def _present(values, field):
+    header=FIXED_COLUMNS[field]
+    return header in values and values[header] is not None and str(values[header]).strip()!=""
 
 def validate_fixed_record(values: dict) -> None:
     """Validate required template cells before any claim row is imported."""
     if not isinstance(values,dict):
         raise ClaimValidationError("record is not a mapping")
-    missing=[header for header in FIXED_HEADERS
+    missing=[header for header in REQUIRED_HEADERS
              if header not in values or values[header] is None or not str(values[header]).strip()]
     if missing:
         raise ClaimValidationError("missing required cells: "+", ".join(missing))
@@ -41,16 +48,21 @@ def validate_fixed_record(values: dict) -> None:
     except ValueError:
         raise ClaimValidationError("service date must use DD/MM/YYYY") from None
     for field in ("unit_price","gross_amount","copay_amount","claimed_amount"):
+        if not _present(values,field):
+            continue
         try:
             source_decimal(values[FIXED_COLUMNS[field]])
         except ClaimValidationError as exc:
             raise ClaimValidationError(f"invalid {FIXED_COLUMNS[field]}: {exc}") from None
-    try:
-        percent=source_decimal(values[FIXED_COLUMNS["copay_percent"]],allow_percent=True)
-    except ClaimValidationError as exc:
-        raise ClaimValidationError(f"invalid {FIXED_COLUMNS['copay_percent']}: {exc}") from None
-    if percent>100:
-        raise ClaimValidationError("copay percentage must be between 0 and 100")
+    if _present(values,"copay_percent"):
+        try:
+            percent=source_decimal(values[FIXED_COLUMNS["copay_percent"]],allow_percent=True)
+        except ClaimValidationError as exc:
+            raise ClaimValidationError(f"invalid {FIXED_COLUMNS['copay_percent']}: {exc}") from None
+        if percent>100:
+            raise ClaimValidationError("copay percentage must be between 0 and 100")
+    if not _present(values,"claimed_amount") and not (_present(values,"gross_amount") or _present(values,"unit_price")):
+        raise ClaimValidationError("missing required cells: الصافي أو السعر أو المطلوب")
 
 def source_decimal(value, *, allow_percent=False):
     """Accept explicit decimal amounts and unambiguous three-digit grouping."""
@@ -64,30 +76,55 @@ def source_decimal(value, *, allow_percent=False):
         raise ClaimValidationError('source number out of range or precision')
     return number
 
+def _mapped_values(values,mapping):
+    try:
+        data={}
+        for field,source in mapping['columns'].items():
+            raw=values.get(source)
+            data[field]="" if raw is None else str(raw).strip()
+        data['currency']=mapping['currency']
+        raw=data['service_date']
+        if mapping['date_format']=='DMY':
+            data['service_date']=datetime.strptime(raw,'%d/%m/%Y').date().isoformat()
+        elif mapping['date_format']=='YMD_SLASH':
+            data['service_date']=datetime.strptime(raw,'%Y/%m/%d').date().isoformat()
+        else:
+            data['service_date']=datetime.fromisoformat(raw).date().isoformat()
+        unit=source_decimal(data['unit_price']) if data.get('unit_price') else None
+        gross=source_decimal(data['gross_amount']) if data.get('gross_amount') else None
+        if gross is None and unit is not None:
+            gross=unit
+        if unit is None and gross is not None:
+            unit=gross
+        percent=source_decimal(data['copay_percent'],allow_percent=True) if data.get('copay_percent') else None
+        copay=source_decimal(data['copay_amount']) if data.get('copay_amount') else None
+        if copay is None and gross is not None and percent is not None:
+            copay=gross*percent/Decimal(100)
+        if data.get('claimed_amount'):
+            net=source_decimal(data['claimed_amount'])
+        else:
+            net=None
+        data['claimed_amount']=None if net is None else format(net.quantize(Decimal('0.0001'),rounding=ROUND_HALF_UP),'f')
+        return data
+    except ClaimValidationError:
+        raise
+    except (KeyError,TypeError,ValueError):
+        raise ClaimValidationError('source values do not match the confirmed mapping') from None
+
 def normalize(values: dict, mapping=None) -> dict:
     if not isinstance(values,dict):
         raise ClaimValidationError("record is not a mapping")
     if mapping:
-        # The original source dict is never changed. Column choices and currency
-        # are confirmed by the operator, not guessed from the invoice text.
-        try:
-            data={field:str(values[source]).strip() for field,source in mapping['columns'].items()}
-            data['currency']=mapping['currency']
-            raw=data['service_date']
-            if mapping['date_format']=='DMY':
-                data['service_date']=datetime.strptime(raw,'%d/%m/%Y').date().isoformat()
-            elif mapping['date_format']=='YMD_SLASH':
-                data['service_date']=datetime.strptime(raw,'%Y/%m/%d').date().isoformat()
-            else:
-                data['service_date']=datetime.fromisoformat(raw).date().isoformat()
-            data['claimed_amount']=format(source_decimal(data['claimed_amount']),'f')
-            values=data
-        except (KeyError,TypeError,ValueError):
-            raise ClaimValidationError('source values do not match the confirmed mapping') from None
-    missing=[key for key in FIELDS if key not in values or not isinstance(values[key],str) or not values[key].strip()]
+        values=_mapped_values(values,mapping)
+    required=FIELDS if not mapping else ("claim_reference","beneficiary_token","provider_code",
+        "service_code","service_date","currency")
+    missing=[key for key in required if key not in values or not isinstance(values[key],str) or not values[key].strip()]
     if missing:
         raise ClaimValidationError("missing required fields: "+",".join(missing))
-    data={key:values[key].strip() for key in FIELDS}
+    data={key:values[key].strip() for key in ("claim_reference","beneficiary_token",
+        "provider_code","service_code","service_date","currency")}
+    claimed=values.get("claimed_amount")
+    data["claimed_amount"]=None if claimed is None or not str(claimed).strip() else str(claimed).strip()
     for key,limit in (("claim_reference",120),("beneficiary_token",128),("provider_code",80),("service_code",100)):
         if len(data[key])>limit or any(ord(c)<32 for c in data[key]):
             raise ClaimValidationError("invalid "+key)
@@ -99,12 +136,15 @@ def normalize(values: dict, mapping=None) -> dict:
         raise ClaimValidationError("service_date must be ISO YYYY-MM-DD") from exc
     if day.isoformat()!=data["service_date"]:
         raise ClaimValidationError("noncanonical service date")
-    try:
-        amount=Decimal(data["claimed_amount"])
-    except InvalidOperation as exc:
-        raise ClaimValidationError("invalid claimed amount") from exc
-    if not amount.is_finite() or amount<0 or amount>=Decimal("100000000000000") or amount.as_tuple().exponent < -4:
-        raise ClaimValidationError("claimed amount out of range or precision")
+    if data["claimed_amount"] is None:
+        amount=None
+    else:
+        try:
+            amount=Decimal(data["claimed_amount"])
+        except InvalidOperation as exc:
+            raise ClaimValidationError("invalid claimed amount") from exc
+        if not amount.is_finite() or amount<0 or amount>=Decimal("100000000000000") or amount.as_tuple().exponent < -4:
+            raise ClaimValidationError("claimed amount out of range or precision")
     data["service_date"]=day
     data["claimed_amount"]=amount
     return data

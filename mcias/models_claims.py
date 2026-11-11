@@ -32,7 +32,7 @@ class ClaimEntry(Base):
     provider_code: Mapped[str]=mapped_column(String(80),nullable=False)
     service_code: Mapped[str]=mapped_column(String(100),nullable=False)
     service_date: Mapped[date]=mapped_column(Date,nullable=False)
-    claimed_amount: Mapped[Decimal]=mapped_column(Numeric(18,4),nullable=False)
+    claimed_amount: Mapped[Decimal | None]=mapped_column(Numeric(18,4),nullable=True)
     currency: Mapped[str]=mapped_column(String(3),nullable=False)
     created_at: Mapped[datetime]=mapped_column(DateTime(timezone=True),nullable=False,default=now_utc)
     __table_args__=(Index("ix_claim_org_service_date", "organization_id", "service_date"),

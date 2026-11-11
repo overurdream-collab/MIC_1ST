@@ -130,6 +130,8 @@ def inspect_line(index, claim, mapping):
         gross=_number(source('gross_amount')) if source('gross_amount') is not None else (unit*quantity if unit is not None else None)
         if gross is None:
             check('gross_amount','hold',reason='confirm_gross_or_unit_price_column');return finish()
+        if claim.claimed_amount is None:
+            check('net_amount','hold',reason='missing_source_net');return finish()
         gross=money(gross,policy);net=money(claim.claimed_amount,policy)
         tariff=money(Decimal(price['values']['amount'])*quantity,policy)
         percent=Decimal(rate['values']['percent'])

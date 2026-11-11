@@ -3,6 +3,7 @@ from io import BytesIO
 from html import escape
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment
+from openpyxl.utils import get_column_letter
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet
@@ -168,3 +169,55 @@ def render_result_partition(dataset, bucket):
     for col in sheet.columns:sheet.column_dimensions[col[0].column_letter].width=24
     sheet.sheet_properties.pageSetUpPr.fitToPage=True
     output=BytesIO();wb.save(output);return output.getvalue()
+
+
+def render_phase1_file(dataset, color):
+    from mcias.services.phase1_rules import (FIXED_HEADERS, REASON_CATEGORIES,
+        STATUS_LABELS, ACCEPTED, REJECTED, validate_dataset)
+    if color not in ('green', 'red'):
+        raise ReportBlocked('Unsupported phase 1 file color')
+    summary = validate_dataset(dataset)
+    target = ACCEPTED if color == 'green' else REJECTED
+    rows = [row for row in dataset['rows'] if row['status'] == target]
+    expected = summary['accepted' if color == 'green' else 'rejected']
+    if len(rows) != expected:
+        raise ReportBlocked('Phase 1 output partition mismatch')
+    label = STATUS_LABELS[target]
+    wb = Workbook()
+    sheet = wb.active
+    sheet.title = label
+    sheet.sheet_view.rightToLeft = True
+    headers = list(FIXED_HEADERS) + ['الحالة', 'الصافي المحتسب']
+    if color == 'red':
+        headers += [title for _, title in REASON_CATEGORIES]
+    headers += ['ملاحظات']
+    fill = '15803D' if color == 'green' else 'B91C1C'
+    for col, title in enumerate(headers, 1):
+        cell = _text_cell(sheet, 1, col, title)
+        cell.font = Font(bold=True, color='FFFFFF')
+        cell.fill = PatternFill('solid', fgColor=fill)
+        cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+    for index, row in enumerate(rows, 2):
+        values = [row.get('values', {}).get(header, '') for header in FIXED_HEADERS]
+        values.append(row.get('status_ar') or STATUS_LABELS[row['status']])
+        values.append(row.get('computed', {}).get('net_amount', ''))
+        if color == 'red':
+            for key, _ in REASON_CATEGORIES:
+                values.append('؛ '.join(row.get('reasons', {}).get(key, [])))
+        values.append('؛ '.join(row.get('notes', [])))
+        for col, value in enumerate(values, 1):
+            cell = _text_cell(sheet, index, col, value)
+            cell.alignment = Alignment(horizontal='right', vertical='top', wrap_text=True)
+    sheet.freeze_panes = 'A2'
+    sheet.auto_filter.ref = sheet.dimensions
+    widths = [22] * len(FIXED_HEADERS) + [16, 16]
+    if color == 'red':
+        widths += [32] * len(REASON_CATEGORIES)
+    widths += [40]
+    for col, width in enumerate(widths, 1):
+        sheet.column_dimensions[get_column_letter(col)].width = width
+    sheet.sheet_properties.pageSetUpPr.fitToPage = True
+    sheet.page_setup.orientation = 'landscape'
+    output = BytesIO()
+    wb.save(output)
+    return output.getvalue()

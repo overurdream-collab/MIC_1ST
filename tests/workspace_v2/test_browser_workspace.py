@@ -18,9 +18,11 @@ def test_five_sections_reference_tables_and_permissions_in_browser(workspace,mon
     from sqlalchemy.orm import Session
     from mcias.models import User
     from mcias.seed.reference_inputs import seed_reference_inputs
+    from mcias.seed.linked_references import seed_linked_references
     api=workspace;monkeypatch.setenv('MCIAS_ENVIRONMENT','development');monkeypatch.setenv('MCIAS_LAPTOP_TEST_MODE','synthetic_localhost')
     with Session(api.engine) as db:
-        seed_reference_inputs(db,db.get(User,api.ids['root']));db.commit()
+        seed_reference_inputs(db,db.get(User,api.ids['root']))
+        seed_linked_references(db,db.get(User,api.ids['root']));db.commit()
     app.dependency_overrides[get_rate_limit_db]=api.database
     with sync_playwright() as p:
         executable=shutil.which('chromium')
@@ -75,20 +77,20 @@ def test_five_sections_reference_tables_and_permissions_in_browser(workspace,mon
         page.get_by_role('button',name='فحص الملف واستيراده بالكامل',exact=True).click()
         page.get_by_role('button',name='فحص الملف ثم الاستيراد',exact=True).click()
         page.get_by_role('button',name='تجهيز ملفي النتائج',exact=True).click()
-        page.get_by_role('button',name='تنزيل ملفي النتائج',exact=True).wait_for()
+        page.get_by_text('مرفوض — الملف الأحمر: 4',exact=True).wait_for()
         with page.expect_download() as event:
-            page.get_by_role('button',name='تنزيل ملفي النتائج',exact=True).click()
-        output=tmp_path/'results.zip';event.value.save_as(output)
-        from zipfile import ZipFile
-        with ZipFile(output) as archive:
-            assert set(archive.namelist())=={'accepted.xlsx','requires_review.xlsx'}
-            from openpyxl import load_workbook
-            from io import BytesIO
-            held=list(load_workbook(BytesIO(archive.read('requires_review.xlsx')),read_only=True).active.values)
-            assert len(held)==5
-            assert all('نقص المرفقات' in row[9] for row in held[1:])
-            assert load_workbook(BytesIO(archive.read('accepted.xlsx')),read_only=True).active.max_row==1
+            page.get_by_role('button',name='تنزيل الملف الأحمر',exact=True).click()
+        red_path=tmp_path/'red.xlsx';event.value.save_as(red_path)
+        with page.expect_download() as event:
+            page.get_by_role('button',name='تنزيل الملف الأخضر',exact=True).click()
+        green_path=tmp_path/'green.xlsx';event.value.save_as(green_path)
+        from openpyxl import load_workbook
+        red=list(load_workbook(red_path,read_only=True).active.values)
+        assert len(red)==5
+        assert all(row[12]=='مرفوض' for row in red[1:])
+        assert load_workbook(green_path,read_only=True).active.max_row==1
         assert any(path.endswith('/resume') and status==200 for _,path,status in responses)
+        assert any(path.endswith('/run') and status==201 for _,path,status in responses)
         # A second, linked workbook exercises the actual category/service/network
         # resolver rather than manufactured financial snapshots.
         from mcias.seed.linked_references import sample_workbook
@@ -98,26 +100,15 @@ def test_five_sections_reference_tables_and_permissions_in_browser(workspace,mon
         page.get_by_role('button',name='رفع ومعاينة',exact=True).click()
         page.get_by_role('button',name='فحص الملف واستيراده بالكامل',exact=True).click()
         page.get_by_role('button',name='فحص الملف ثم الاستيراد',exact=True).click()
-        page.get_by_text('مطابق: 0 · اختلاف: 0 · ناقص: 4',exact=True).wait_for()
-        assert page.get_by_role('button',name='بدء التدقيق',exact=True).is_visible()
-        page.get_by_role('button',name='تفاصيل الفحص',exact=True).first.click()
-        assert page.locator('#drawer').get_by_text('نقص المرفقات — فاتورة الخدمة غير متوفرة',exact=True).is_visible()
-        page.keyboard.press('Escape')
-        from tests.workspace_v2.invoice_fixtures import attach_invoices
         batch_id=page.locator('[name=audit-batch]').input_value()
-        attach_invoices(api,batch_id)
-        page.get_by_role('button',name='فحص / إعادة فحص المدخلات',exact=True).click()
-        page.get_by_text('مطابق: 4 · اختلاف: 0 · ناقص: 0',exact=True).wait_for()
-        assert page.get_by_role('button',name='تفاصيل الفحص',exact=True).count()==4
-        # A matching invoice/reference check is insufficient for financial
-        # execution: no signed policy is enrolled in this browser fixture.
+        assert page.get_by_role('button',name='بدء التدقيق',exact=True).is_visible()
         page.get_by_role('button',name='بدء التدقيق',exact=True).click()
-        page.get_by_role('heading',name='نتيجة دورة التدقيق',exact=True).wait_for()
-        run=api.client.get(f'/api/v1/audits/batches/{batch_id}/run',headers=api.headers['root'])
-        assert run.status_code==200,run.text
-        assert run.json()['counts']=={'accepted':0,'rejected':0,'held':4,'review':0}
-        assert all(item['reason']=='missing_or_ambiguous_signed_policy' and item['snapshot_id'] is None for item in run.json()['rows'])
-        assert any(method=='POST' and path==f'/api/v1/audits/batches/{batch_id}/run' and status==201 for method,path,status in responses)
+        page.get_by_role('heading',name='نتيجة التدقيق — المرحلة الأولى',exact=True).wait_for()
+        page.get_by_text('مطابق مبدئي: 4',exact=False).wait_for()
+        results=api.client.get('/api/v1/phase1/results',headers=api.headers['root'])
+        assert results.status_code==200,results.text
+        assert results.json()['items'][0]['summary']['accepted']==4
+        assert any(method=='POST' and path==f'/api/v1/phase1/batches/{batch_id}/run' and status==201 for method,path,status in responses)
         evidence_dir=Path(__import__('os').getenv('MCIAS_BROWSER_ARTIFACT_DIR',str(tmp_path/'browser-evidence')))
         evidence_dir.mkdir(parents=True,exist_ok=True)
         page.screenshot(path=str(evidence_dir/'MCIAS_invoice_cycle_unsigned_ar.png'),full_page=True)
