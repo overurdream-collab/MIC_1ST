@@ -33,7 +33,8 @@ def test_t17_postgres_restore_and_encrypted_bundle():
             with create_engine(url).begin() as conn:
                 conn.execute(text("CREATE TABLE IF NOT EXISTS restore_probe (id integer primary key, payload text not null)"))
                 conn.execute(text("INSERT INTO restore_probe VALUES (1701, 'synthetic restore proof') ON CONFLICT (id) DO UPDATE SET payload = EXCLUDED.payload"))
-            dump = run("pg_dump", *base, "-Fc", "-d", source_db, env=pg_env)
+            dump = run("pg_dump", *base, "-Fp", "-d", source_db, env=pg_env)
+            dump = b"\n".join(line for line in dump.splitlines() if not line.startswith(b"SET transaction_timeout"))
             with tempfile.TemporaryDirectory() as source_dir:
                 source_key = os.urandom(32)
                 store = EncryptedStore(source_dir, source_key)
@@ -47,7 +48,7 @@ def test_t17_postgres_restore_and_encrypted_bundle():
             with tempfile.TemporaryDirectory() as restored_source_dir:
                 (Path(restored_source_dir) / object_id).write_bytes(recovered["sources/" + object_id])
                 assert EncryptedStore(restored_source_dir, source_key).get(object_id, digest) == b"synthetic source document"
-            run("pg_restore", *base, "-d", restore_db, "--no-owner", "--no-privileges", env=pg_env, input=recovered["database.dump"])
+            run("psql", *base, "-d", restore_db, "-v", "ON_ERROR_STOP=1", env=pg_env, input=recovered["database.dump"])
             restored_url = parsed.set(database=restore_db).render_as_string(hide_password=False)
             restored_engine = create_engine(restored_url)
             try:
