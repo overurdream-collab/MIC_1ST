@@ -14,7 +14,7 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session
 from mcias.models import User,Role,UserRole,RolePermission,MFAFactor
 from mcias.mfa import generate_totp
-from mcias.services import rbac_provisioning as plans,authorization_service as authority
+from mcias.services import rbac_provisioning as plans,authorization_service as authority,access_service
 from tests.authorization_fixtures import signed_fixture
 
 def run(base_url,chromium):
@@ -30,6 +30,8 @@ def run(base_url,chromium):
         with Session(api.engine) as db:
             factor=db.scalar(select(MFAFactor).where(MFAFactor.user_id==api.ids['root']))
             nonce=os.urandom(12);factor.encrypted_secret=nonce+AESGCM(server_key).encrypt(nonce,api.mfa_secret,api.ids['root'].encode())
+            admin=db.get(User,api.ids['admin'])
+            access_service.replace_grants(db,db.get(User,api.ids['root']),admin.id,['claims.read','reports.read','users.create','groups.members.add','groups.members.remove'],access_service.revision(db,admin),'Synthetic RBAC browser permissions')
             legacy=Role(code='SYN-browser-reviewed-'+uuid4().hex);db.add(legacy);db.flush()
             db.add_all([UserRole(user_id=api.ids['none'],role_id=legacy.id),RolePermission(role_id=legacy.id,permission_id=api.permissions['claims.read'])]);db.commit()
             manifest=plans.preview_migration(db,api.organization_id)
@@ -63,10 +65,10 @@ def run(base_url,chromium):
             review_id=response.value.json()['id']
             expect(page.locator('main')).to_contain_text('تم التطبيق. معرّف المراجعة')
             me=request.get(base_url+'/api/v1/permissions/me',headers=api.headers['none']).json()
-            assert 'claims.read' in me['permission_codes']
+            assert 'claims.read' not in me['permission_codes']
             repeat=request.post(base_url+'/api/v1/admin/rbac/apply',headers=api.headers['root'],data=envelope)
             assert repeat.status==201 and repeat.json()['id']==review_id
-            checks.append('real MFA login, preview download, signed-plan upload, activation and idempotent replay')
+            checks.append('real MFA login, preview download, signed-plan upload, frozen legacy grant and idempotent replay')
             root_codes=request.get(base_url+'/api/v1/permissions/me',headers=api.headers['root']).json()['permission_codes']
             assert not authority.FINANCIAL_APPROVALS.intersection(root_codes)
             group_path=base_url+f"/api/v1/groups/{api.groups['claims_approver']}/members"

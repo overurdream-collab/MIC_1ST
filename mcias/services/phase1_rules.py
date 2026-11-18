@@ -317,6 +317,7 @@ def evaluate_line(index, claim, mapping, seen):
     if terms.get('precision') in (0, 2, 4) and terms.get('rounding') in ('HALF_UP', 'HALF_EVEN'):
         policy = SimpleNamespace(precision=terms['precision'], rounding=terms['rounding'])
 
+    gross_m = unit_m = copay_m = net_m = None
     if policy is None:
         _add(reasons, 'calculation', 'تعذر التحقق الحسابي لعدم اكتمال شروط العقد (التقريب/الخانات)')
     else:

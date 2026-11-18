@@ -15,9 +15,13 @@ from mcias.services.transaction_lock import lock_record
 
 AUTHORITY = "super_admin_v1"
 
+INTAKE_APPROVAL_CODE = "reference.intake.approve"
+
 def registry_codes():
     from mcias.schemas.registry import SCHEMAS
-    return {f"registry.{feature}.{operation}" for feature in SCHEMAS for operation in ("read", "create", "update")}
+    codes = {f"registry.{feature}.{operation}" for feature in SCHEMAS for operation in ("read", "create", "update")}
+    codes.add(INTAKE_APPROVAL_CODE)
+    return codes
 
 def catalog(db):
     result = {p.code: {"code":p.code, "description_ar":p.description_ar,
@@ -26,8 +30,11 @@ def catalog(db):
     for feature in SCHEMAS:
         for operation, label in (("read","عرض"),("create","إضافة"),("update","تعديل")):
             code=f"registry.{feature}.{operation}"
-            result.setdefault(code,{"code":code,"description_ar":f"{label}: {feature}",
-                "description_en":f"{operation}: {feature}","category":"reference_intake"})
+            result[code]={"code":code,"description_ar":f"{label}: {feature}",
+                "description_en":f"{operation}: {feature}","category":"reference_intake"}
+    result[INTAKE_APPROVAL_CODE]={"code":INTAKE_APPROVAL_CODE,
+        "description_ar":"اعتماد المدخلات المرجعية بعد مراجعة مؤسسية",
+        "description_en":"Approve reference intake after institutional review","category":"reference_intake"}
     return sorted(result.values(),key=lambda p:p['code'])
 
 
@@ -43,18 +50,24 @@ def _activations(db, organization_id, user_id):
 def permission_records(db, user, code=None):
     if not auth.live_user(user) or not user.organization_id:
         return []
+    merged = {}
     activated = {event.resource_id for event in _activations(db, user.organization_id, user.id)}
-    if not activated:
-        return []
-    query = select(Permission).join(UserPermission, UserPermission.permission_id == Permission.id).where(
-        UserPermission.id.in_(activated), UserPermission.user_id == user.id,
-        UserPermission.organization_id == user.organization_id,
-        *auth.live(UserPermission, date.today()))
-    if code:
-        query = query.where(Permission.code == code)
-    # Delegation administration always stays with the technical super-admin.
-    return [p for p in db.scalars(query.order_by(Permission.code)).unique()
-            if p.code not in auth.TECHNICAL_ONLY and not p.code.startswith(("system.", "organizations."))]
+    if activated:
+        query = select(Permission).join(UserPermission, UserPermission.permission_id == Permission.id).where(
+            UserPermission.id.in_(activated), UserPermission.user_id == user.id,
+            UserPermission.organization_id == user.organization_id,
+            *auth.live(UserPermission, date.today()))
+        if code:
+            query = query.where(Permission.code == code)
+        # Delegation administration always stays with the technical super-admin.
+        merged.update({p.id: p for p in db.scalars(query.order_by(Permission.code)).unique()
+            if p.code not in auth.TECHNICAL_ONLY and not p.code.startswith(("system.", "organizations."))})
+    # Institution-assigned memberships are effective in super_admin mode only
+    # when both the group and the assignment carry a trusted provisioning origin.
+    # Older migrated memberships stay frozen until separately reviewed.
+    merged.update({p.id: p for p in auth._reviewed_permission_records(
+        db, user, code, membership_source_type='institution_assignment')})
+    return sorted(merged.values(), key=lambda p: p.code)
 
 
 def revision(db, user):

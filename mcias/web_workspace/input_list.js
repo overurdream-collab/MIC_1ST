@@ -15,6 +15,7 @@ export function inputList(ctx) {
   const content = el("div"); card.append(content); root.append(card);
   let schema, offset = 0, generation = 0, selected = null;
   const clauseSection = ['inputs.contracts','inputs.regulations','inputs.exceptions','inputs.caps','inputs.coverage','inputs.approvals'].includes(feature);
+  const inputApproval = feature.startsWith('inputs.');
   const provider = field('price-provider',L('مقدم الخدمة','Provider'),{required:false,options:[['',L('اختر مقدم الخدمة','Select provider')]]});
   let providerOptionsLoaded=false;
   provider.input.addEventListener('change',()=>{offset=0;selected=null;void load();});
@@ -104,16 +105,31 @@ export function inputList(ctx) {
     const body = el("div"); body.append(loading()); openDrawer(L("تفاصيل السجل", "Record details"), body);
     try {
       const [record, history] = await Promise.all([api.request(`${base}/records/${id}`), api.request(`${base}/records/${id}/history`)]);
+      const values={...(record.values||{})};delete values.record_code;
+      const approved = record.approval_status === "approved";
       body.replaceChildren(el("h3", record.title), badge(L(record.status === "open" ? "مفتوح" : "مغلق", record.status === "open" ? "Open" : "Closed")),
-        el("p", L("بانتظار المراجعة المؤسسية", "Pending institutional review"), "muted"),
-        details({ id: record.id, version: record.version, effective_from: record.effective_from,
-          effective_to: record.effective_to, source_sha256: record.source_sha256, ...record.values }));
-      if(Object.keys(record.links||{}).length||Object.keys(record.terms||{}).length)
-        body.append(el('h3',L('العلاقات والقواعد','Relationships and terms')),details({...record.links,...record.terms}));
+        el("p", inputApproval ? (approved ? L("معتمد مؤسسياً", "Institutionally approved") : L("بانتظار المراجعة المؤسسية", "Pending institutional review")) : L("مرجع محفوظ", "Reference stored"), "muted"),
+        details({effective_from:record.effective_from,effective_to:record.effective_to,...values}));
+      if(Object.keys(record.terms||{}).length)
+        body.append(el('h3',L('القواعد المرتبطة','Linked terms')),details(record.terms));
+      if(Object.keys(record.links||{}).length)
+        body.append(el('p',L('هذا السجل مرتبط بمراجع محفوظة؛ تظهر معرّفاتها التقنية فقط عند الحاجة.','This record is linked to preserved references; technical identifiers are hidden unless needed.'),'muted'));
       if (record.close_reason) body.append(el("p", record.close_reason));
       const actions = el("div", null, "actions"); body.append(actions);
       if(record.status==='open' && schema.permissions.update)
         actions.append(button(L('تعديل','Edit'),()=>openDrawer(L('تعديل مع حفظ النسخة السابقة','Edit and preserve previous version'),recordForm(record))));
+      if(inputApproval && record.status==='open' && schema.permissions.approve && !approved && !record.created_by_me) {
+        const approve = button(L('اعتماد السجل','Approve record'), async () => {
+          if (!(await confirm(L('اعتماد هذا السجل؟','Approve this record?')))) return;
+          approve.disabled = true;
+          try {
+            await api.request(`${base}/records/${id}/approve`, { method: 'POST', body: { expected_version: record.version } });
+            document.getElementById('drawer').close(); await load();
+            toast(L('تم اعتماد السجل','Record approved'));
+          } catch (error) { toast(error.message); approve.disabled = false; }
+        }, 'button primary');
+        actions.append(approve);
+      }
       if (record.status === "open" && schema.permissions.close) {
         const close = button(L("إغلاق السجل", "Close record"), () => {
           const form = el("form"), reason = field("intake-close-reason", L("سبب الإغلاق", "Closing reason"), { maxLength: 2000 });
@@ -134,7 +150,7 @@ export function inputList(ctx) {
       if (record.status === "closed" && schema.permissions.create)
         actions.append(button(L("إضافة نسخة جديدة", "Add new version"), () => openDrawer(L("نسخة جديدة", "New version"), recordForm(record))));
       body.append(el("h3", L("تاريخ النسخ", "Version history")));
-      for (const version of history.items) body.append(el("p", `${version.version} · ${version.status} · ${version.effective_from} → ${version.effective_to || "—"}`));
+      for (const version of history.items) body.append(el("p", `${version.version} · ${L(version.status === "open" ? "مفتوح" : "مغلق", version.status === "open" ? "Open" : "Closed")} · ${version.approval_status === "approved" ? L("معتمد", "Approved") : L("بانتظار الاعتماد", "Pending approval")} · ${version.effective_from} → ${version.effective_to || "—"}`));
       if (record.evidence) {
         body.append(el("h3", L("المرفقات والمصدر", "Attachments and source")), el("code", record.evidence.sha256));
         body.append(button(L("تنزيل المصدر المرتبط", "Download linked source"), async () => {
@@ -154,21 +170,94 @@ export function inputList(ctx) {
     file.input.accept = ".xlsx,.csv,.pdf";
     const upload = el("button", L("رفع ومعاينة", "Upload and preview"), "button primary"); upload.type = "submit";
     const preview = el("div"); preview.setAttribute("aria-live", "polite");
+    const importType = key => ["effective_from", "effective_to"].includes(key) ? L("تاريخ", "Date")
+      : ["amount", "percent"].includes(key) ? L("رقم عشري", "Decimal")
+      : key === "currency" ? L("عملة", "Currency")
+      : key === "coding_system" ? L("رمز ترميز", "Code") : L("نص", "Text");
+    const importExample = key => ({
+      title: L("عقد تأمين 2026", "Insurance contract 2026"), effective_from: "2026-11-13", effective_to: "2027-11-12",
+      record_code: "SYN-001", provider_code: "HOSP-01", contract_number: "C-2026-001", insurer_code: "INS-01",
+      beneficiary_token: "123456789", category_code: "A", service_code: "CONSULT", coding_system: "LOCAL",
+      currency: "LYD", amount: "1000.00", percent: "20", scope: L("عام", "General"), document_number: "DOC-2026-001",
+    })[key] || L("نص تجريبي", "Sample text");
+    const importNote = (key, maxLength) => {
+      if (key === "amount") return L("رقم غير سالب، حتى 4 منازل عشرية", "Non-negative number, up to 4 decimals");
+      if (key === "percent") return L("رقم بين 0 و100", "Number from 0 to 100");
+      if (key === "currency") return L("3 أحرف إنجليزية كبيرة", "3 uppercase English letters");
+      if (key === "coding_system") return "LOCAL / ICD / CPT / LOINC / SNOMED";
+      if (key === "effective_from" || key === "effective_to") return L("YYYY-MM-DD أو DD/MM/YYYY", "YYYY-MM-DD or DD/MM/YYYY");
+      if (key === "record_code") return L("معرّف داخلي فريد", "Unique internal identifier");
+      return maxLength ? L(`حتى ${maxLength} حرفاً`, `Up to ${maxLength} characters`) : "";
+    };
+    const columns = [
+      { key: "title", ar: L("الاسم / العنوان", "Name / title"), required: true, maxLength: 200 },
+      { key: "effective_from", ar: L("تاريخ بداية السريان", "Effective from"), required: true },
+      { key: "effective_to", ar: L("تاريخ نهاية السريان", "Effective until"), required: false },
+      ...schema.fields.map(item => ({ key: item.key, ar: L(item.ar, item.en), required: true,
+        maxLength: item.max_length || 200, example: item.example || "" })),
+    ];
+    const guide = el("div", null, "table-scroll"), guideTable = el("table"), guideHead = el("thead"), guideHeader = el("tr");
+    for (const label of [L("الحقل", "Field"), L("اسم العمود في الملف", "File column"), L("نوع البيانات", "Data type"),
+      L("مطلوب", "Required"), L("مثال", "Example"), L("ملاحظات", "Notes")]) guideHeader.append(el("th", label));
+    guideHead.append(guideHeader); guideTable.append(guideHead);
+    const guideBody = el("tbody");
+    for (const column of columns) {
+      const row = el("tr");
+      row.append(el("td", column.ar),
+        el("td", `${column.ar} (${column.key})`),
+        el("td", importType(column.key)),
+        el("td", column.required ? L("نعم", "Yes") : L("لا", "No")),
+        el("td", column.example || importExample(column.key)),
+        el("td", importNote(column.key, column.maxLength)));
+      guideBody.append(row);
+    }
+    guideTable.append(guideBody); guide.append(guideTable);
+    const template = columns.map(column => column.ar).join(",");
+    const locatorText = locator => {
+      if (!locator) return L("الملف", "File");
+      if (locator.kind === "sheet") return L(`الورقة ${locator.index} · الصف ${locator.row || "—"}`, `Sheet ${locator.index} · Row ${locator.row || "—"}`);
+      if (locator.kind === "row") return L(`الصف ${locator.row || locator.index}`, `Row ${locator.row || locator.index}`);
+      return L("الملف", "File");
+    };
+    const ingestionReason = reason => ({
+      "invalid worksheet header": L("ترويسة الورقة غير صالحة: يجب أن تحتوي كل خلية على اسم عمود فريد وغير فارغ.",
+        "Invalid worksheet header: every cell must contain a unique, non-empty column name."),
+      "empty worksheet": L("الورقة فارغة.", "The worksheet is empty."),
+      "formula cell": L("خلية معادلة غير مسموحة. استبدلها بقيمة ثابتة.", "Formula cell is not allowed. Replace it with a static value."),
+      "unreadable or unsafe source": L("تعذر قراءة الملف أو أنه غير آمن. جرّب ملف Excel/CSV صالحاً.",
+        "The file could not be read or is unsafe. Try a valid Excel/CSV file."),
+    })[reason] || reason;
+    body.append(el("h3", L("أعمدة ملف Excel / CSV", "Excel / CSV columns")),
+      el("p", L("استخدم أسماء الأعمدة العربية التالية في الصف الأول من كل ورقة. يمكن أيضاً استخدام المفتاح الإنجليزي المعروض بين الأقواس.",
+        "Use the following Arabic headers in the first row of each sheet. The English key shown in parentheses is also accepted."), "muted"),
+      guide,
+      el("p", L("صف الترويسة الجاهز للنسخ:", "Ready-to-copy header row:"), "muted"),
+      el("code", template),
+      el("p", L("التواريخ تُقبل بصيغة YYYY-MM-DD أو DD/MM/YYYY. لا تستخدم معادلات داخل الخلايا.",
+        "Dates accept YYYY-MM-DD or DD/MM/YYYY. Do not use formulas in cells."), "muted"));
     form.append(file.wrap, upload); body.append(form, preview);
-    const template = ["title", "effective_from", "effective_to", ...schema.fields.map(item => item.key)].join(",");
-    body.append(el("p", L("أعمدة CSV / Excel المطلوبة:", "Required CSV / Excel columns:")), el("code", template));
     form.addEventListener("submit", async event => {
       event.preventDefault(); if (upload.disabled || !form.reportValidity()) return;
       const selected = file.input.files[0]; if (!selected) return;
-      if (selected.size > 20 * 1024 * 1024) { preview.replaceChildren(el("p", L("الحد الأقصى 20 MiB", "Maximum 20 MiB"))); return; }
+      if (selected.size > 50 * 1024 * 1024) { preview.replaceChildren(el("p", L("الحد الأقصى 50 MiB", "Maximum 50 MiB"))); return; }
       upload.disabled = true; preview.replaceChildren(loading());
       try {
         const source = await api.request(`${base}/imports?filename=${encodeURIComponent(selected.name)}`, { method: "POST", raw: true, body: await selected.arrayBuffer() });
         if (source.status === "review_required") {
-          preview.replaceChildren(empty(L("المصدر محجور للمراجعة", "Source quarantined for review"),
-            L("حُفظ الأصل. عالج أسباب الاستخراج أو أعد رفع ملف صحيح.", "The original is preserved. Resolve extraction issues or upload a valid source."))); return;
+          let issues = [];
+          try { issues = (await api.request(`/api/v1/ingestion/jobs/${source.job_id}/quarantine`)).items || []; } catch { /* keep the generic guidance below */ }
+          const box = panel(L("المصدر يحتاج إلى تصحيح", "Source needs correction"),
+            L("لم يُستورد أي سجل. صحح الأسباب التالية ثم ارفع نسخة جديدة.",
+              "No records were imported. Fix the following reasons and upload a new copy."));
+          if (issues.length) for (const issue of issues) box.append(el("p", `${locatorText(issue.locator)} — ${ingestionReason(issue.reason)}`));
+          else box.append(el("p", L("تعذر استخراج الملف. تحقق من أن الصف الأول يحتوي أسماء أعمدة فريدة وغير فارغة.",
+            "The file could not be extracted. Check that the first row has unique, non-empty column names.")));
+          preview.replaceChildren(box); return;
         }
-        const result = await api.request(`${base}/imports/${source.document_id}/preview`); preview.replaceChildren(el("code", result.source_sha256));
+        const result = await api.request(`${base}/imports/${source.document_id}/preview`); preview.replaceChildren(el("p", L("تم حفظ المصدر الأصلي وبصمته. راجع الصفوف قبل الحفظ.","Original source and fingerprint preserved. Review rows before saving."), "muted"));
+        const invalidCount = result.items.filter(item => !item.valid).length;
+        if (invalidCount) preview.append(el("p", L(`عدد الصفوف التي تحتاج تصحيحاً: ${invalidCount}. راجع سبب كل صف ثم ارفع نسخة جديدة.`,
+          `${invalidCount} row(s) need correction. Review each row reason and upload a new copy.`), "muted"));
         if (result.items.some(item => item.manual_required)) {
           preview.append(el("p", L("PDF دليل مصدر؛ أدخل الحقول بعد مراجعة المستند.", "PDF is source evidence; enter structured fields after reviewing it.")));
           for (const item of result.items) preview.append(el("pre", item.text_excerpt));
@@ -185,7 +274,11 @@ export function inputList(ctx) {
             const label = el("label", item.record.title); label.htmlFor = checkbox.id;
             selectedRows.add(item.id); checkbox.addEventListener("change", () => checkbox.checked ? selectedRows.add(item.id) : selectedRows.delete(item.id));
             row.append(checkbox, label, details(item.record));
-          } else row.append(badge(L("سجل غير صالح", "Invalid record"), "warning"), details(item.locator), el("p", item.error));
+          } else {
+            const errorBox = el("div", null, "error");
+            errorBox.append(el("strong", L("سبب رفض الصف", "Row rejection reason")), el("p", item.error));
+            row.append(badge(L("سجل غير صالح", "Invalid record"), "warning"), el("p", locatorText(item.locator), "muted"), errorBox);
+          }
           preview.append(row);
         }
         const save = button(L("تأكيد وحفظ المحدد", "Confirm and save selected"), async () => {
@@ -223,18 +316,38 @@ export function inputList(ctx) {
       const nouns={ 'inputs.contracts':['عقد','contract'],'inputs.regulations':['لائحة','regulation'],
         'inputs.exceptions':['استثناء','exception'],'inputs.caps':['سقف','ceiling'],'inputs.coverage':['تغطية','coverage'],'inputs.approvals':['موافقة','approval'] };
       const noun=nouns[feature];
+      const importFile=button(L('استيراد Excel / CSV','Import Excel / CSV'),importDialog);
+      importFile.disabled=!schema.permissions.create||!schema.permissions.upload;
+      importFile.title=importFile.disabled?L('يتطلب صلاحية الإنشاء والاستيراد لحساب الإدخال.','Requires create and import permissions for a data-entry account.'):'';
+      actions.append(importFile);
       const add=button(noun?L(`إضافة ${noun[0]} جديد`,`Add new ${noun[1]}`):L('إضافة','Add'),()=>openDrawer(L('سجل جديد','New record'),recordForm(null)),'button primary');
       add.disabled=!schema.permissions.create;actions.append(add);
       const edit=button(clauseSection?L('تعديل بند','Edit clause'):L('تعديل','Edit'),()=>{if(selected)openDrawer(L('تعديل مع حفظ التاريخ','Edit with history preserved'),recordForm(selected));});
       edit.disabled=!selected||!schema.permissions.update;actions.append(edit);
       const addClause=clauseSection?button(L('إضافة بند','Add clause'),()=>{if(selected)openDrawer(L('إضافة بند','Add clause'),recordForm(null,null,null,selected));}):null;
       if(addClause){addClause.disabled=!selected||!schema.permissions.create;actions.append(addClause);}
+      const canApproveSelected = () => Boolean(inputApproval && selected && selected.status === 'open' &&
+        schema.permissions.approve && selected.approval_status !== 'approved' && !selected.created_by_me);
+      const approve = inputApproval ? button(L('اعتماد','Approve'), async () => {
+        if (!canApproveSelected() || !(await confirm(L('اعتماد هذا السجل؟','Approve this record?')))) return;
+        approve.disabled = true;
+        try {
+          await api.request(`${base}/records/${selected.id}/approve`, { method: 'POST', body: { expected_version: selected.version } });
+          await load(); toast(L('تم اعتماد السجل','Record approved'));
+        } catch (error) { toast(error.message); approve.disabled = !canApproveSelected(); }
+      }, 'button primary') : null;
+      if (approve) { approve.disabled = !canApproveSelected(); actions.append(approve); }
+      const updateSelectionActions = () => {
+        edit.disabled = !selected || !schema.permissions.update;
+        if (addClause) addClause.disabled = !selected || !schema.permissions.create || selected.status !== 'open';
+        if (approve) approve.disabled = !canApproveSelected();
+      };
       const list = el("div", null, "table-scroll"),table=el('table'),thead=el('thead'),header=el('tr');
-      for(const label of [L('تحديد','Select'),L('الاسم / البند','Name / clause'),L('القيم المرجعية','Reference values'),L('الحالة','Status'),L('فترة السريان','Validity'),L('الإصدار','Version'),L('المصدر والاكتمال','Source and completeness'),L('الاعتماد','Approval')])header.append(el('th',label));
+      for(const label of [L('تحديد','Select'),L('الاسم / البند','Name / clause'),L('القيم المرجعية','Reference values'),L('الحالة','Status'),L('فترة السريان','Validity'),L('الإصدار','Version'),L('المصدر والاكتمال','Source and completeness'),inputApproval?L('الاعتماد','Approval'):L('الحالة المرجعية','Reference status')])header.append(el('th',label));
       thead.append(header);table.append(thead);const tbody=el('tbody');
       for (const record of data.items) {
         const row=el('tr'),choice=el('td'),radio=el('input');radio.type='radio';radio.name='selected-intake';radio.checked=selected?.id===record.id;radio.setAttribute('aria-label',record.title);
-        radio.addEventListener('change',()=>{selected=record;edit.disabled=!schema.permissions.update;if(addClause)addClause.disabled=!schema.permissions.create||record.status!=='open';});choice.append(radio);
+        radio.addEventListener('change',()=>{selected=record;updateSelectionActions();});choice.append(radio);
         const title=el('td');title.append(button(`${record.clause_number?record.clause_number+' · ':''}${record.title}`,()=>void showRecord(record.id),'link-button'));
         const values=el('td');for(const item of schema.fields.filter(i=>i.key!=='record_code'))values.append(el('div',`${L(item.ar,item.en)}: ${record.values[item.key]}`));
         if(record.terms?.network)values.append(el('div',L(record.terms.network==='in_network'?'داخل الشبكة':'خارج الشبكة',record.terms.network==='in_network'?'In network':'Out of network')));
@@ -242,15 +355,15 @@ export function inputList(ctx) {
         row.append(choice,title,values,el('td',L(record.status==='open'?'مفتوح':'مغلق',record.status==='open'?'Open':'Closed')),
           el('td',`${record.effective_from} → ${record.effective_to||'—'}`),el('td',record.version),
           el('td',L(record.evidence?'مستند مرتبط؛ حقول مكتملة':'إدخال يدوي؛ حقول مكتملة',record.evidence?'Linked document; fields complete':'Manual entry; fields complete')),
-          el('td',L('بانتظار مراجعة المرجع','Reference review pending')));tbody.append(row);
+          el('td',inputApproval?L(record.approval_status==='approved'?'معتمد':'بانتظار الاعتماد',record.approval_status==='approved'?'Approved':'Pending approval'):L('مرجع محفوظ','Reference stored')));tbody.append(row);
       }
       table.append(tbody);list.append(table);
       const pagination = el("div", null, "actions");
       if (offset) pagination.append(button(L("السابق", "Previous"), () => { offset = Math.max(0, offset - 25); void load(); }));
       if (data.has_more) pagination.append(button(L("التالي", "Next"), () => { offset += 25; void load(); }));
       const showPrices=feature!=='providers.prices'||Boolean(provider.input.value);
-      content.replaceChildren(filters,showPrices?(data.items.length?list:empty(L('لا سجلات','No records'),L('أضف سجلًا جديدًا.','Add a new record.'),route.icon)):
-        empty(L('اختر مقدم الخدمة أولًا','Select a provider first'),L('تظهر تسعيرات المقدم المختار فقط.','Only the selected provider’s price list is shown.'),route.icon),pagination,actions);
+      content.replaceChildren(filters,actions,showPrices?(data.items.length?list:empty(L('لا سجلات','No records'),L('أضف سجلًا جديدًا.','Add a new record.'),route.icon)):
+        empty(L('اختر مقدم الخدمة أولًا','Select a provider first'),L('تظهر تسعيرات المقدم المختار فقط.','Only the selected provider’s price list is shown.'),route.icon),pagination);
     } catch (error) { content.replaceChildren(errorState(error, () => void load())); }
   }
   void load();

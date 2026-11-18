@@ -7,7 +7,8 @@ from sqlalchemy import select
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session
 from datetime import date
-from mcias.models import MFAFactor, UserGroup
+from mcias.models import MFAFactor, User, UserGroup
+from mcias.services import access_service
 
 ROOT=Path(__file__).resolve().parents[1]
 
@@ -31,6 +32,8 @@ def run(base_url,chromium):
             db.flush()
             from tests.authorization_fixtures import approve_fixture
             approve_fixture(db,actor.organization_id,actor.ids['root'])
+            admin=db.get(User,actor.ids['admin'])
+            access_service.replace_grants(db,db.get(User,actor.ids['root']),admin.id,['claims.read','reports.read','users.create','groups.members.add'],access_service.revision(db,admin),'Synthetic feature navigation permissions')
             db.commit()
         fixture={'username':actor.root_username,'password':actor.password,'organization_id':actor.organization_id,
             'other_organization_id':actor.other_organization_id,'headers':actor.headers,'mfa_secret':actor.mfa_secret.hex()}

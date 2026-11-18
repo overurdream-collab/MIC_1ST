@@ -85,7 +85,7 @@ def _covered(origin,provisioning,group,record,kind,permission_code=None):
             return item['user_id']==record.user_id
     return False
 
-def _reviewed_permission_records(db,user,code=None):
+def _reviewed_permission_records(db,user,code=None,membership_source_type=None):
     if not live_user(user) or not user.organization_id:return []
     gp_origin=aliased(RbacGrantOrigin);ug_origin=aliased(RbacGrantOrigin)
     gp_provision=aliased(RbacProvisioning);ug_provision=aliased(RbacProvisioning)
@@ -100,6 +100,7 @@ def _reviewed_permission_records(db,user,code=None):
         ug_provision.organization_id==user.organization_id,*live(Group,date.today()),
         *live(GroupPermission,date.today()),*live(UserGroup,date.today()))
     if code:query=query.where(Permission.code==code)
+    if membership_source_type:query=query.where(ug_origin.source_type==membership_source_type)
     registry=trust_registry();verified={};results={};technical=technical_identity(db,user)
     for permission,group,gp,ug,gpo,ugo,gpp,ugp in db.execute(query):
         if not allowed_in_group(permission.code,group.management_scope):continue

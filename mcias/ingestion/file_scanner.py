@@ -3,8 +3,8 @@ import io
 import zipfile
 from pathlib import PurePath
 
-MAX_BYTES = 20 * 1024 * 1024
-MAX_UNCOMPRESSED = 80 * 1024 * 1024
+MAX_BYTES = 50 * 1024 * 1024
+MAX_UNCOMPRESSED = 256 * 1024 * 1024
 
 class UnsafeDocument(ValueError):
     pass

@@ -6,6 +6,7 @@ const sections = [
   ["المطالبات والدفعات", "Claims and batches", "/institution/claims", "claims", "متابعة المطالبات والدفعات المستوردة", "Track imported claims and batches"],
   ["التدقيق والمراجعة", "Audit and review", "/institution/reviews", "audit", "النتائج والأدلة والمراجعات والاعتراضات", "Findings, evidence, reviews and appeals"],
   ["التحليلات", "Analytics", "/institution/ai-intelligence", "ai", "تحليل البيانات والإشارات والاتجاهات", "Data analysis, signals and trends"],
+  ["المؤشرات التنفيذية", "Executive KPIs", "/institution/executive-kpi", "dashboard", "نظرة تنفيذية على المطابقة والاختلافات وجودة البيانات", "Executive view of matching, differences and data quality"],
   ["التقارير", "Reports", "/institution/reports", "reports", "التقارير المحفوظة والتصدير المصرح", "Frozen reports and authorized exports"],
   ["مستخدمو الجهة", "Institution users", "/institution/users", "beneficiaries", "إدارة الموظفين وإسناد الفئات المعتمدة", "Manage employees and assign approved groups"],
 ];
@@ -114,11 +115,12 @@ export function institutionUsers(ctx) {
   }
 
   async function show(user){
+    const dateText=value=>value?new Date(String(value).length<=10?value+"T00:00:00":value).toLocaleDateString(preferences.lang):"—";
     const body=el("div");body.append(el("h3",user.full_name_ar||user.username),el("p",user.username),
       badge(user.status==="open"?L("مفتوح","Open"):L("مغلق","Closed")),
-      el("p",L("تاريخ الإنشاء: ","Created: ")+new Date(user.created_at).toLocaleString(preferences.lang)),
-      el("p",L("بداية السريان: ","Effective from: ")+user.effective_from));
-    if(user.effective_to)body.append(el("p",L("تاريخ الإغلاق: ","Closed: ")+user.effective_to));
+      el("p",L("تاريخ الإنشاء: ","Created: ")+dateText(user.created_at)),
+      el("p",L("بداية السريان: ","Effective from: ")+dateText(user.effective_from)));
+    if(user.effective_to)body.append(el("p",L("تاريخ الإغلاق: ","Closed: ")+dateText(user.effective_to)));
     const groupSection=el("div"),feedback=el("div");feedback.setAttribute("aria-live","polite");
     body.append(el("h3",L("الفئات المسندة","Assigned groups")),groupSection);
     for(const group of user.groups){

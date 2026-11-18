@@ -19,6 +19,7 @@ def ensure_admin(db, org_id, accounts, env, operational_permissions):
         raise ValueError('Dedicated laptop PostgreSQL database required')
     if any(account['username'] == USERNAME for account in accounts):
         # Repeated setup must not recreate accounts or restore revoked grants.
+        ensure_intake_approval(db, org_id, accounts, env)
         return False
     if db.get(User, identifier('laptop-institution-admin')) or db.scalar(select(User.id).where(User.username == USERNAME)):
         raise ValueError('Institution admin exists without private credentials; operator recovery required')
@@ -37,7 +38,11 @@ def ensure_admin(db, org_id, accounts, env, operational_permissions):
         management_scope='institution_admin', effective_from=date.today(), created_by=root.id)
     db.add(group); db.flush()
     template = next(g for g in get_default_groups() if g['code'] == 'admin')
-    codes = set(template['permissions']) | {c for c in operational_permissions if authority.allowed_in_group(c, 'institution_admin')}
+    codes = {c for c in template['permissions'] if authority.allowed_in_group(c, 'institution_admin')}
+    codes |= {c for c in operational_permissions if authority.allowed_in_group(c, 'institution_admin')}
+    from mcias.schemas.registry import SCHEMAS
+    codes |= {f"registry.{feature}.read" for feature in SCHEMAS}
+    codes.add('reference.intake.approve')
     for code in sorted(codes):
         permission = db.scalar(select(Permission).where(Permission.code == code))
         if permission is None:
@@ -46,6 +51,12 @@ def ensure_admin(db, org_id, accounts, env, operational_permissions):
             effective_from=date.today(), granted_by=root.id))
     db.add(UserGroup(organization_id=org_id, user_id=user.id, group_id=group.id,
         effective_from=date.today(), added_by=root.id)); db.flush()
+    # The laptop runs in super_admin authority, where group grants are frozen
+    # until explicitly activated. Activate this bootstrap account's approved
+    # group permissions once; later revocations are never restored by setup.
+    from mcias.services import access_service
+    access_service.replace_grants(db, root, user.id, sorted(codes),
+        access_service.revision(db, user), 'Synthetic institution admin bootstrap')
     # Initial test entitlements only. Later revocation is never undone by setup.
     for feature in features.list_features(db):
         if feature.is_container or feature.code.startswith('system.'):
@@ -58,4 +69,45 @@ def ensure_admin(db, org_id, accounts, env, operational_permissions):
         'totp_secret_base32':base64.b32encode(secret).decode().rstrip('=')})
     db.add(AuditLog(actor_id=root.id, organization_id=org_id, action='synthetic_institution_admin_bootstrap',
         resource_type='user', resource_id=user.id, details={'synthetic':True, 'group_id':group.id}))
+    return True
+
+
+def ensure_intake_approval(db, org_id, accounts, env):
+    """Add the non-financial intake approval grant once to an existing laptop fixture."""
+    from mcias.seed.laptop import guard
+    guard(env)
+    from mcias.services import access_service
+    if not any(account['username'] == USERNAME for account in accounts):
+        return False
+    user = db.scalar(select(User).where(User.organization_id == org_id, User.username == USERNAME))
+    root_id = next((account['id'] for account in accounts if account['username'] == 'SYN-laptop-admin'), None)
+    root = db.get(User, root_id) if root_id else None
+    if not user or not root:
+        return False
+    from mcias.schemas.registry import SCHEMAS
+    code = access_service.INTAKE_APPROVAL_CODE
+    wanted = {code} | {f"registry.{feature}.read" for feature in SCHEMAS}
+    revoked_codes = set(db.scalars(select(AuditLog.details['code'].as_string()).where(
+        AuditLog.organization_id == org_id, AuditLog.action == 'access.revoke',
+        AuditLog.details['user_id'].as_string() == user.id)))
+    group = db.scalar(select(Group).where(Group.organization_id == org_id, Group.code == 'laptop_institution_admin'))
+    if group is not None:
+        for wanted_code in sorted(wanted - revoked_codes):
+            permission = db.scalar(select(Permission).where(Permission.code == wanted_code))
+            if permission is None:
+                permission = Permission(code=wanted_code, category='reference_intake',
+                    description_ar='اعتماد المدخلات المرجعية بعد مراجعة مؤسسية' if wanted_code == code else wanted_code,
+                    is_system=True)
+                db.add(permission); db.flush()
+            if db.scalar(select(GroupPermission.id).where(GroupPermission.organization_id == org_id,
+                    GroupPermission.group_id == group.id, GroupPermission.permission_id == permission.id)) is None:
+                db.add(GroupPermission(organization_id=org_id, group_id=group.id, permission_id=permission.id,
+                    effective_from=date.today(), granted_by=root_id))
+        db.flush()
+    current = {p.code for p in access_service.permission_records(db, user)}
+    missing = (wanted - current) - revoked_codes
+    if not missing:
+        return False
+    access_service.replace_grants(db, root, user.id, sorted(current | missing),
+        access_service.revision(db, user), 'Reference intake approval bootstrap')
     return True

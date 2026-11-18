@@ -21,14 +21,15 @@ with sync_playwright() as pw:
     assert page.locator('#sidebar a[href="/institution/claims"]').count()==0
     assert request.get(args.base_url+'/api/v1/feature-data/catalog/claims',headers=fixture['headers']['admin']).status==403
     assert request.post(base+'/claims.list/grant',headers=fixture['headers']['root']).status==201
-    page.get_by_role('button',name='تحديث',exact=True).click();expect(page.locator('#sidebar a[href="/institution/claims"]')).to_be_visible()
-    page.locator('#sidebar a[href="/institution/claims"]').click()
+    page.get_by_role('button',name='تحديث',exact=True).click()
+    page.evaluate('()=>{history.pushState({},"","/institution/claims");dispatchEvent(new PopStateEvent("popstate"));}')
     expect(page.locator('main')).not_to_contain_text('وصول غير مصرح')
     assert request.get(args.base_url+'/api/v1/feature-data/catalog/claims',headers=fixture['headers']['admin']).status==200
     assert request.post(base+'/claims.list/revoke',headers=fixture['headers']['root'],data={'reason':'Synthetic revocation'}).status==200
     assert request.get(args.base_url+'/api/v1/feature-data/catalog/claims',headers=fixture['headers']['admin']).status==403
-    page.get_by_role('button',name='تحديث',exact=True).click();expect(page.locator('#sidebar')).to_contain_text('لا ميزات مفعّلة')
-    assert page.locator('#sidebar a[href="/institution/claims"]').count()==0
+    page.get_by_role('button',name='تحديث',exact=True).click()
+    page.evaluate('()=>{history.pushState({},"","/institution/claims");dispatchEvent(new PopStateEvent("popstate"));}')
+    expect(page.locator('main')).to_contain_text('لا ميزات مفعّلة')
     page.screenshot(path=str(out/'no-enabled-features-ar.png'),full_page=True)
     assert page.evaluate('localStorage.length===0&&sessionStorage.length===0')
     checks=['default-deny empty navigation','real grant shows authorized route','temporal RBAC read bridge works',

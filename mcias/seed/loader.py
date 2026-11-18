@@ -17,7 +17,13 @@ NAMESPACE = UUID("31233666-7a1d-44e1-a7d4-5a9725631a3f")
 def identifier(label):
     return str(uuid5(NAMESPACE, "workspace-v1:" + label))
 
-def load(config):
+def _activate_reader_grants(db, org_id, user, codes):
+    from mcias.services import access_service
+    root = db.scalar(select(User).where(User.username == "SYN-seed-rbac-root-" + org_id))
+    access_service.replace_grants(db, root, user.id, codes, access_service.revision(db, user),
+        "Synthetic seed reader permissions")
+
+def load(config, *, activate_reader=False):
     config.validate()
     raw = files("mcias.seed").joinpath("data/workspace-v1.json").read_bytes()
     spec = Dataset.model_validate_json(raw)
@@ -37,6 +43,9 @@ def load(config):
                 manifest = dict(previous.details["manifest"])
                 manifest["password"] = "synthetic_e2e_password_only"
                 actor = db.get(User, identifier("reader"))
+                if activate_reader:
+                    _activate_reader_grants(db, org_id, actor, spec.permissions)
+                    db.commit()
                 if db.scalar(select(func.count()).select_from(ClaimEntry).where(ClaimEntry.organization_id == org_id)) != config.count:
                     raise ValueError("seed receipt does not match current database")
                 if config.count > 1000:
@@ -73,27 +82,44 @@ def load(config):
                                status="extracted", manifest={"complete": True, "synthetic_metadata_only": True})
             db.add(job); db.flush()
             batch = ClaimBatch(id=identifier("batch"), organization_id=org.id, ingestion_document_id=doc.id,
-                created_by=actor.id, status="imported", source_sha256=digest,
+                created_by=actor.id, status="imported", display_name="مطالبات تجريبية",
+                entry_date=date(2026, 9, 1), source_sha256=digest,
                 record_count=config.count, imported_count=config.count)
             db.add(batch); db.flush()
             ids = []
+            names = ("أحمد محمد", "فاطمة علي", "يوسف أحمد", "مريم حسن",
+                     "سارة خالد", "عمر محمود", "ليلى عبد الله", "علي سالم",
+                     "نورا يوسف", "حسناء إبراهيم", "خالد مصطفى", "هدى رمضان")
+            categories = ("أساسي", "تكميلي")
+            providers = ("مستشفى النور", "عيادة الشفاء")
+            services = ("زيارة طبيب", "دواء", "فحص مخبري", "أشعة")
             for i in range(config.count):
-                values = {"claim_reference": "SYN-E2E-" + str(i + 1), "claimed_amount": str(spec.claimed_amount),
+                token = "200000" + str(i + 1).zfill(4)
+                category = categories[i % len(categories)]
+                provider = providers[i % len(providers)]
+                service = services[i % len(services)]
+                values = {"claim_reference": "INV-2" + str(i + 1).zfill(3),
+                          "claimed_amount": str(spec.claimed_amount),
+                          "الرقم التأميني": token, "اسم المستفيد": names[i % len(names)],
+                          "الدرجة": category, "مقدم الخدمة": provider, "الخدمة": service,
                           "diagnosis": "SYNTHETIC_PRIVATE_FIELD_NOT_DISCLOSED"}
                 record = ExtractedSourceRecord(id=identifier("record:" + str(i)), job_id=job.id,
                                                locator={"row": i + 2}, values=values)
                 db.add(record); db.flush()
                 claim = ClaimEntry(id=identifier("claim:" + str(i)), organization_id=org.id, batch_id=batch.id,
                     extracted_record_id=record.id, source_locator=record.locator, source_values=values,
-                    claim_reference=values["claim_reference"], beneficiary_token="SYN-BEN-" + str(i % 1000),
-                    provider_code="SYN-PROVIDER" if config.count == 12 else "SYN-PROVIDER-" + str(i % 100),
-                    service_code="SYN-SERVICE", service_date=date(2026, 9, 1) + timedelta(days=i % 365),
+                    claim_reference=values["claim_reference"], beneficiary_token=token,
+                    provider_code=provider, service_code=service,
+                    service_date=date(2026, 9, 1) + timedelta(days=i % 365),
                     claimed_amount=spec.claimed_amount, currency=spec.currency)
                 db.add(claim); ids.append(claim.id)
                 if i % 500 == 0: db.flush()
             db.flush()
             from mcias.seed.authorization import approve_synthetic
             approve_synthetic(db,org.id,config.environment)
+            if activate_reader:
+                _activate_reader_grants(db, org.id, actor, spec.permissions)
+                db.commit()
             # Snapshot creation owns its commit. Receipt permits retry without duplicating data.
             manifest = {"username": actor.username, "password": "synthetic_e2e_password_only",
                         "organization_id": org.id, "claim_ids": ids, "batch_id": batch.id,

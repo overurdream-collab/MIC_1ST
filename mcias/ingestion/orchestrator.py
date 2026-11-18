@@ -1,14 +1,17 @@
 """Transactional ingestion: encrypted original first, tenant-scoped deduplication, reviewable extraction."""
+import logging
 from sqlalchemy import select
 from mcias.models import SourceFile, AuditLog
 from mcias.models_ingestion import IngestionDocument, IngestionJob, ExtractedSourceRecord, QuarantineItem
 from mcias.ingestion.fingerprint import sha256
 from mcias.ingestion.malware_scan import scan, MalwareDetected, MalwareScannerUnavailable
-from mcias.ingestion.file_scanner import identify
+from mcias.ingestion.file_scanner import identify, MAX_BYTES
 from mcias.ingestion.isolated_parser import isolated_parse
 from mcias.ingestion.manifest import manifest
 from mcias.ingestion.provenance import locator_dict
 from mcias.ingestion.palermo.palermo_1 import review
+
+logger=logging.getLogger(__name__)
 
 class IngestionError(ValueError):
     pass
@@ -18,11 +21,13 @@ def ingest(db, store, organization_id: str, actor_id: str, filename: str, data: 
         raise IngestionError("organization required")
     if not isinstance(data, bytes) or not data:
         raise IngestionError("nonempty bytes required")
-    if len(data) > 20 * 1024 * 1024:
+    if len(data) > MAX_BYTES:
         raise IngestionError("source exceeds upload limit")
     digest = sha256(data)
     previous = db.scalar(select(IngestionDocument).where(IngestionDocument.organization_id == organization_id, IngestionDocument.sha256 == digest))
     if previous:
+        logger.info("ingestion_duplicate organization_id=%s document_id=%s sha256=%s filename=%s",
+            organization_id, previous.id, digest, filename)
         return {"document_id": previous.id, "status": "duplicate", "sha256": digest}
     object_id, stored_digest = store.put(data)
     source = SourceFile(sha256=stored_digest, original_filename=filename, storage_key=object_id)
@@ -44,12 +49,20 @@ def ingest(db, store, organization_id: str, actor_id: str, filename: str, data: 
             db.add(QuarantineItem(job_id=job.id, reason=issue["reason"], locator=issue["locator"]))
         job.manifest = manifest(extraction)
         job.status = result["status"]
+        if extraction.quarantined:
+            logger.warning("ingestion_quarantined organization_id=%s document_id=%s filename=%s sha256=%s reasons=%s",
+                organization_id, document.id, filename, digest,
+                [issue["reason"] for issue in extraction.quarantined[:20]])
     except Exception as exc:
         # Preserve encrypted originals; scanner failures are never treated as safe.
+        logger.exception("ingestion_failed organization_id=%s document_id=%s filename=%s sha256=%s error=%s",
+            organization_id, document.id, filename, digest, type(exc).__name__)
         job.status = "review_required"
         job.manifest = {"complete": False, "error": type(exc).__name__, "expected_units": 1, "processed_units": 0, "quarantined_units": 1}
         db.add(QuarantineItem(job_id=job.id, reason="unreadable or unsafe source", locator={"kind":"file","index":1}))
     document.status = job.status
+    logger.info("ingestion_completed organization_id=%s document_id=%s filename=%s sha256=%s status=%s",
+        organization_id, document.id, filename, digest, job.status)
     db.add(AuditLog(actor_id=actor_id, action="source_ingested", resource_type="ingestion_document", resource_id=document.id, details={"sha256": digest, "status": job.status}))
     db.commit()
     return {"document_id": document.id, "job_id": job.id, "status": job.status, "sha256": digest, "manifest": job.manifest}

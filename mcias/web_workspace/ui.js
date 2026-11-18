@@ -193,12 +193,25 @@ const labels = {
   source_id: ["المصدر", "Source"],
   service_date: ["تاريخ الخدمة", "Service date"],
   claim_reference: ["مرجع المطالبة", "Claim reference"],
-  provider_code: ["رمز المزود", "Provider code"],
+  display_name: ["اسم الدفعة", "Batch name"],
+  entry_date: ["تاريخ الإدخال", "Entry date"],
+  beneficiary_name: ["اسم المستفيد", "Beneficiary name"],
+  beneficiary_token: ["الرقم التأميني", "Insurance number"],
+  category_code: ["الدرجة", "Category"],
+  service_code: ["الخدمة", "Service"],
+  provider_code: ["مقدم الخدمة", "Provider"],
+  record_code: ["الرمز الداخلي", "Internal code"],
   version: ["الإصدار", "Version"],
   created_at: ["تاريخ التسجيل", "Created"],
   effective_from: ["ساري من", "Effective from"],
   effective_until: ["ساري حتى", "Effective until"],
   imported_count: ["المستورد", "Imported"],
+  total_lines: ["عدد البنود", "Lines"],
+  matched_count: ["مطابق", "Matched"],
+  unmatched_count: ["مرفوض", "Rejected"],
+  unverified_count: ["غير محسوم", "Unverified"],
+  flagged_value: ["القيمة الموسومة", "Flagged value"],
+  price_variance: ["فرق السعر", "Price variance"],
   record_count: ["عدد السجلات", "Records"],
   sha256: ["بصمة المصدر", "Source hash"],
   document_id: ["المستند", "Document"],
@@ -250,7 +263,12 @@ export function display(value) {
   if (value === null || value === undefined) return "—";
   if (typeof value === "boolean")
     return value ? L("نعم", "Yes") : L("لا", "No");
-  return String(value);
+  const text = String(value);
+  if (["B", "أساسي", "BASIC"].includes(text))
+    return L("الفئة الأساسية", "Basic category");
+  if (["C", "تكميلي", "SUPPLEMENTARY"].includes(text))
+    return L("الفئة التكميلية", "Supplementary category");
+  return text;
 }
 export function details(value, depth = 0) {
   const list = el("dl", null, "detail-grid");

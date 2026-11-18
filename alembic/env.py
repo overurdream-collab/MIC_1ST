@@ -12,7 +12,7 @@ import mcias.models_features  # register 0021 metadata without changing historic
 import mcias.models_authorization
 config = context.config
 if config.config_file_name:
-    fileConfig(config.config_file_name)
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 target_metadata = Base.metadata
 
 def run_migrations_offline():

@@ -38,7 +38,7 @@ def context(authorization: str | None = Header(default=None), db: Session = Depe
 
 # Only explicitly approved fields are serialized; never raw medical source values.
 CATALOG = {
-    "batches": (ClaimBatch, "claims.read", ("id", "status", "record_count", "imported_count", "source_sha256", "created_at")),
+    "batches": (ClaimBatch, "claims.read", ("id", "display_name", "entry_date", "status", "record_count", "imported_count", "source_sha256", "created_at")),
     "claims": (ClaimEntry, "claims.read", ("id", "batch_id", "claim_reference", "service_date", "claimed_amount", "currency")),
     "documents": (IngestionDocument, "ingestion.read", ("id", "status", "sha256", "revision_of", "created_at")),
     "jobs": (IngestionJob, "ingestion.read", ("id", "document_id", "status", "created_at")),

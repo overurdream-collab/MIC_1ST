@@ -34,6 +34,28 @@ def _present(values, field):
     header=FIXED_COLUMNS[field]
     return header in values and values[header] is not None and str(values[header]).strip()!=""
 
+def header_mismatch_message(missing, unexpected):
+    missing=list(missing);unexpected=list(unexpected)
+    lines=[]
+    if len(missing)==1 and len(unexpected)==1:
+        lines.append(f"أعد تسمية العمود من «{unexpected[0]}» إلى «{missing[0]}»، ثم ارفع الملف من جديد.")
+    else:
+        if missing:lines.append("الأعمدة الناقصة: "+"، ".join(f"«{header}»" for header in missing)+".")
+        if unexpected:lines.append("الأعمدة غير المعتمدة: "+"، ".join(f"«{header}»" for header in unexpected)+".")
+        lines.append("صحح أسماء الأعمدة ثم ارفع الملف من جديد.")
+    lines.append("يجب أن تكون الترويسات الـ12 مطابقة تماماً: "+"، ".join(FIXED_HEADERS)+".")
+    return " ".join(lines)
+
+def source_date(value):
+    """Accept the published DD/MM/YYYY template plus unambiguous ISO/Excel dates."""
+    raw=str(value).strip()
+    for pattern in ("%d/%m/%Y","%Y-%m-%d","%Y-%m-%d %H:%M:%S","%Y-%m-%dT%H:%M:%S"):
+        try:
+            return datetime.strptime(raw,pattern).date()
+        except ValueError:
+            pass
+    raise ClaimValidationError("تاريخ الخدمة يجب أن يكون بصيغة DD/MM/YYYY أو YYYY-MM-DD، مثال: 11/11/2026. صحح عمود «تاريخ الخدمة» ثم أعد رفع الملف.")
+
 def validate_fixed_record(values: dict) -> None:
     """Validate required template cells before any claim row is imported."""
     if not isinstance(values,dict):
@@ -41,39 +63,35 @@ def validate_fixed_record(values: dict) -> None:
     missing=[header for header in REQUIRED_HEADERS
              if header not in values or values[header] is None or not str(values[header]).strip()]
     if missing:
-        raise ClaimValidationError("missing required cells: "+", ".join(missing))
-    raw_date=str(values[FIXED_COLUMNS["service_date"]]).strip()
-    try:
-        datetime.strptime(raw_date,"%d/%m/%Y")
-    except ValueError:
-        raise ClaimValidationError("service date must use DD/MM/YYYY") from None
+        raise ClaimValidationError("الخلايا المطلوبة التالية ناقصة: "+"، ".join(f"«{header}»" for header in missing)+". املأها ثم أعد رفع الملف.")
+    source_date(values[FIXED_COLUMNS["service_date"]])
     for field in ("unit_price","gross_amount","copay_amount","claimed_amount"):
         if not _present(values,field):
             continue
         try:
             source_decimal(values[FIXED_COLUMNS[field]])
         except ClaimValidationError as exc:
-            raise ClaimValidationError(f"invalid {FIXED_COLUMNS[field]}: {exc}") from None
+            raise ClaimValidationError(f"القيمة في العمود «{FIXED_COLUMNS[field]}» غير صالحة: {exc}. صححها ثم أعد رفع الملف.") from None
     if _present(values,"copay_percent"):
         try:
             percent=source_decimal(values[FIXED_COLUMNS["copay_percent"]],allow_percent=True)
         except ClaimValidationError as exc:
-            raise ClaimValidationError(f"invalid {FIXED_COLUMNS['copay_percent']}: {exc}") from None
+            raise ClaimValidationError(f"القيمة في العمود «{FIXED_COLUMNS['copay_percent']}» غير صالحة: {exc}. صححها ثم أعد رفع الملف.") from None
         if percent>100:
-            raise ClaimValidationError("copay percentage must be between 0 and 100")
+            raise ClaimValidationError("نسبة التحمل يجب أن تكون بين 0 و100. صحح عمود «نسبة التحمل» ثم أعد رفع الملف.")
     if not _present(values,"claimed_amount") and not (_present(values,"gross_amount") or _present(values,"unit_price")):
-        raise ClaimValidationError("missing required cells: الصافي أو السعر أو المطلوب")
+        raise ClaimValidationError("الخلايا المطلوبة التالية ناقصة: «الصافي» أو «السعر» أو «المطلوب». املأها ثم أعد رفع الملف.")
 
 def source_decimal(value, *, allow_percent=False):
     """Accept explicit decimal amounts and unambiguous three-digit grouping."""
     raw=str(value).strip()
     if allow_percent:raw=raw.removesuffix('%').strip()
     if ',' in raw and not re.fullmatch(r'[0-9]{1,3}(,[0-9]{3})+(\.[0-9]{1,4})?',raw):
-        raise ClaimValidationError('ambiguous numeric grouping')
+        raise ClaimValidationError("تنسيق الأرقام غامض؛ استخدم فاصلة آلاف صحيحة أو بدونها")
     try:number=Decimal(raw.replace(',',''))
-    except InvalidOperation:raise ClaimValidationError('invalid source number') from None
+    except InvalidOperation:raise ClaimValidationError("الرقم غير صالح") from None
     if not number.is_finite() or number<0 or number>=Decimal('100000000000000') or number.as_tuple().exponent < -4:
-        raise ClaimValidationError('source number out of range or precision')
+        raise ClaimValidationError("الرقم خارج النطاق أو بدقة غير مقبولة")
     return number
 
 def _mapped_values(values,mapping):
@@ -85,7 +103,7 @@ def _mapped_values(values,mapping):
         data['currency']=mapping['currency']
         raw=data['service_date']
         if mapping['date_format']=='DMY':
-            data['service_date']=datetime.strptime(raw,'%d/%m/%Y').date().isoformat()
+            data['service_date']=source_date(raw).isoformat()
         elif mapping['date_format']=='YMD_SLASH':
             data['service_date']=datetime.strptime(raw,'%Y/%m/%d').date().isoformat()
         else:

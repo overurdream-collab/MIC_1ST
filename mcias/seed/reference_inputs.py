@@ -20,32 +20,33 @@ def seed_reference_inputs(db, actor):
         raise ValueError('Explicit synthetic organization and MFA super-admin required')
     created=0;today=date.today()
     titles={
-        'inputs.contracts':'SYN عقد مقدم الخدمة', 'inputs.insurers':'SYN شركة التأمين',
-        'inputs.regulations':'SYN لائحة مالية', 'inputs.exceptions':'SYN استثناء موثق',
-        'inputs.approvals':'SYN موافقة سابقة', 'inputs.caps':'SYN سقف تجريبي',
-        'inputs.coverage':'SYN تغطية تجريبية', 'beneficiaries.names':'SYN مستفيد تجريبي',
-        'beneficiaries.categories':'SYN الفئة B', 'beneficiaries.cost_sharing':'SYN تحمل الفئة B',
-        'providers.hospitals':'SYN مستشفى تجريبي', 'providers.clinics':'SYN عيادة تجريبية',
-        'providers.labs':'SYN مختبر تجريبي', 'providers.radiology':'SYN مركز أشعة',
-        'providers.pharmacies':'SYN صيدلية تجريبية', 'providers.services':'SYN خدمة كشف',
-        'providers.prices':'SYN تسعيرة وحدة قبل التحمل',
+        'inputs.contracts':'عقد مقدم خدمة السلام', 'inputs.insurers':'شركة التأمين الوطنية',
+        'inputs.regulations':'لائحة مالية عامة', 'inputs.exceptions':'استثناء موثق عام',
+        'inputs.approvals':'موافقة سابقة عامة', 'inputs.caps':'سقف تغطية عام',
+        'inputs.coverage':'تغطية عامة', 'beneficiaries.names':'خالد مصطفى',
+        'beneficiaries.categories':'الفئة العامة', 'beneficiaries.cost_sharing':'تحمل الفئة العامة',
+        'providers.hospitals':'مستشفى السلام', 'providers.clinics':'عيادة السلام',
+        'providers.labs':'مختبر السلام', 'providers.radiology':'مركز أشعة السلام',
+        'providers.pharmacies':'صيدلية السلام', 'providers.services':'استشارة عامة',
+        'providers.prices':'تسعيرة استشارة عامة',
     }
     for feature,fields in SCHEMAS.items():
         if not features.check_feature(db,actor.organization_id,feature):
             features.grant_feature(db,actor.organization_id,feature,actor.id)
-        values={key:'SYN-REFERENCE' for key in fields}
+        values={key:'مرجع' for key in fields}
         values['record_code']='SYN-WORKSPACE-'+feature
-        for key,value in {'provider_code':'SYN-HOSPITAL','contract_number':'SYN-CONTRACT-2026',
-            'insurer_code':'SYN-INSURER','beneficiary_token':'SYN-BENEFICIARY-B','category_code':'B',
-            'service_code':'SYN-VISIT','coding_system':'LOCAL','currency':'LYD','amount':'100.00',
-            'percent':'20','scope':'SYN-test-only','document_number':'SYN-DOC-1'}.items():
+        for key,value in {'provider_code':'مستشفى السلام','contract_number':'عقد-السلام-2026',
+            'insurer_code':'شركة التأمين الوطنية','beneficiary_token':'1999999999','category_code':'فئة عامة',
+            'service_code':'استشارة عامة','coding_system':'LOCAL','currency':'LYD','amount':'100.00',
+            'percent':'20','scope':'نطاق عام','document_number':'لائحة-2026-009'}.items():
             if key in values:values[key]=value
         if feature.startswith('providers.') and feature.split('.')[1] in ('clinics','labs','radiology','pharmacies'):
-            values['provider_code']='SYN-'+feature.split('.')[1].upper()
+            values['provider_code']={'clinics':'عيادة السلام','labs':'مختبر السلام',
+                'radiology':'مركز أشعة السلام','pharmacies':'صيدلية السلام'}[feature.split('.')[1]]
         existing=registry.list_records(db,actor,feature,limit=10000)['items']
         if any(r['values']['record_code']==values['record_code'] for r in existing):continue
         registry.create_record(db,actor,feature,RecordCreate(title=titles[feature],effective_from=today,
-            values=values,body='SYNTHETIC temporary reference proposal; not institutional approval.'))
+            values=values,body='مقترح مرجعي تجريبي مؤقت؛ ليس اعتماداً مؤسسياً.'))
         created+=1
     from mcias.seed.linked_references import seed_linked_references
     linked=seed_linked_references(db,actor)

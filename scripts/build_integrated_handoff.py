@@ -23,7 +23,7 @@ def digest(path):
     return result.hexdigest()
 
 
-PUBLIC_SYNTHETIC_FIXTURES = {"mcias/seed/data/workspace-v1.json": "f1275a62d82a2e8cc19c3c1d0185fa47f415f91784c5e338f4ebb94236cce510"}
+PUBLIC_SYNTHETIC_FIXTURES = {"mcias/seed/data/workspace-v1.json": "b3c004b125c671bac1a5157efeec83dc2ecaf4057b1b9e826261ff14d96d6194"}
 
 
 def package(root, wheels, output):

@@ -13,7 +13,8 @@ from pathlib import PurePath
 from sqlalchemy import select, text
 from mcias.models import AuditLog, SourceFile
 from mcias.models_ingestion import IngestionDocument, IngestionJob, ExtractedSourceRecord
-from mcias.schemas.registry import RecordCreate, validate_values, SCHEMAS
+from mcias.schemas.registry import RecordCreate, validate_values, SCHEMAS, FIELDS, import_value, import_date
+from pydantic import ValidationError
 from mcias.services import feature_service as f, rbac_service as rbac
 from mcias.services import authorization_service as authority
 from mcias.storage import EncryptedStore
@@ -137,17 +138,27 @@ def relationship_options(db, actor, feature):
                 options[role].append({'id':row['id'],'title':row['title'],'feature':section,'values':row['values']})
     return options
 
-def _decode(db, actor, feature, event):
+def _approval_map(db, actor, feature):
+    rows = db.scalars(select(AuditLog).where(AuditLog.organization_id == actor.organization_id,
+        AuditLog.resource_type == "reference_intake_approval", AuditLog.action == "intake.approved",
+        AuditLog.details["feature_code"].as_string() == feature)
+        .order_by(AuditLog.created_at, AuditLog.id))
+    return {(row.resource_id, row.details["version"]): row for row in rows}
+
+def _decode(db, actor, feature, event, approval=None):
     source = db.get(SourceFile, event.details["source_id"])
     if source is None: raise ValueError("intake source missing")
     payload = json.loads(store().get(source.storage_key, source.sha256))
     if payload["organization_id"] != actor.organization_id or payload["feature_code"] != feature:
         raise RegistryForbidden("intake source scope mismatch")
+    approved = bool(approval and approval.details.get("version") == event.details["version"])
     return {**payload, "id": event.resource_id, "version": event.details["version"],
         "status": event.details["status"], "effective_to": event.details.get("effective_to", payload.get("effective_to")),
-        "source_sha256": source.sha256, "source_id": source.id, "approval_status": "pending_institutional_review",
+        "source_sha256": source.sha256, "source_id": source.id,
+        "approval_status": "approved" if approved else "pending_institutional_review",
+        "approved_at": approval.created_at if approved else None,
         "financially_active": False, "created_at": event.created_at,
-        "created_by":event.actor_id,
+        "created_by":event.actor_id, "created_by_me": event.actor_id == actor.id,
         "close_reason": payload.get("close_reason"), "event_id": event.id,
         "closed_at":event.details.get('closed_at'),
         "previous_event_id":payload.get('previous_event_id')}
@@ -156,14 +167,16 @@ def read_record(db, actor, feature, record_id):
     authorize(db, actor, feature)
     event = _latest(db, actor, feature).get(record_id)
     if event is None: raise RegistryMissing("record not found")
-    return _decode(db, actor, feature, event)
+    approval = _approval_map(db, actor, feature).get((event.resource_id, event.details["version"]))
+    return _decode(db, actor, feature, event, approval)
 
 def list_records(db, actor, feature, query="", status=None, offset=0, limit=25, provider_code=None):
     authorize(db, actor, feature)
     results = []
+    approvals = _approval_map(db, actor, feature)
     for event in sorted(_latest(db, actor, feature).values(), key=lambda e: (e.created_at, e.id), reverse=True):
         if status and event.details["status"] != status: continue
-        record = _decode(db, actor, feature, event)
+        record = _decode(db, actor, feature, event, approvals.get((event.resource_id, event.details["version"])))
         if provider_code and record['values'].get('provider_code')!=provider_code:continue
         if query and query.casefold() not in (record["title"] + " " + " ".join(record["values"].values())).casefold(): continue
         results.append(record)
@@ -261,9 +274,38 @@ def close_record(db, actor, feature, record_id, expected_version, reason):
         event=_event(db,actor,feature,record_id,record["version"]+1,source.id,"closed",effective_to=date.today().isoformat(),code_digest=latest.details["code_digest"])
         result=_decode(db,actor,feature,event);result["close_reason"]=reason.strip();return result
 
+INTAKE_APPROVAL_PERMISSION = "reference.intake.approve"
+
+def approve_record(db, actor, feature, record_id, expected_version):
+    if not feature.startswith("inputs."):
+        raise RegistryMissing("approval is available for reference inputs")
+    authorize(db, actor, feature)
+    if not authority.check_permission_unified(db, actor, INTAKE_APPROVAL_PERMISSION):
+        raise RegistryForbidden("intake approval permission denied")
+    with rbac._atomic(db):
+        _lock(db, actor.organization_id + ":intake:" + feature)
+        latest = _latest(db, actor, feature).get(record_id)
+        if latest is None: raise RegistryMissing("record not found")
+        approvals = _approval_map(db, actor, feature)
+        record = _decode(db, actor, feature, latest, approvals.get((latest.resource_id, latest.details["version"])))
+        if record["status"] != "open" or record["version"] != expected_version:
+            raise ValueError("record is closed or editor is stale")
+        if record["created_by"] == actor.id:
+            raise ValueError("self-approval is forbidden")
+        existing = approvals.get((record_id, expected_version))
+        if existing:
+            return _decode(db, actor, feature, latest, existing)
+        event = AuditLog(actor_id=actor.id, organization_id=actor.organization_id, category="reference_intake",
+            action="intake.approved", resource_type="reference_intake_approval", resource_id=record_id,
+            details={"feature_code": feature, "version": expected_version, "status": "approved"})
+        db.add(event); db.flush()
+        return _decode(db, actor, feature, latest, event)
+
 def record_history(db, actor, feature, record_id):
     read_record(db,actor,feature,record_id)
-    return [_decode(db,actor,feature,e) for e in _events(db,actor,feature) if e.resource_id==record_id]
+    approvals = _approval_map(db, actor, feature)
+    return [_decode(db,actor,feature,e,approvals.get((e.resource_id,e.details["version"])))
+        for e in _events(db,actor,feature) if e.resource_id==record_id]
 
 def replace_record(db, actor, feature, record_id, data):
     """Atomic administrative closure + immutable replacement; validity is preserved.
@@ -306,15 +348,34 @@ def replace_record(db, actor, feature, record_id, data):
             code_digest=latest.details['code_digest'],previous_event_id=latest.id)
         return _decode(db,actor,feature,event)
 
+def _preview_error(exc):
+    if not isinstance(exc, ValidationError):
+        return str(exc)
+    messages=[]
+    for error in exc.errors():
+        loc=str(error.get("loc",("",))[-1])
+        if loc=="effective_from":
+            messages.append("«تاريخ بداية السريان» غير صالح. استخدم YYYY-MM-DD أو DD/MM/YYYY.")
+        elif loc=="effective_to":
+            messages.append("«تاريخ نهاية السريان» غير صالح. استخدم YYYY-MM-DD أو DD/MM/YYYY.")
+        elif loc=="title":
+            messages.append("«الاسم / العنوان» مطلوب.")
+        elif loc=="dates" and "effective_to" in str(error.get("msg","")):
+            messages.append("«تاريخ نهاية السريان» يجب أن يكون بعد تاريخ البداية.")
+        else:
+            messages.append(str(error.get("msg") or "بيانات السجل غير صالحة"))
+    return " ".join(dict.fromkeys(messages)) or "بيانات السجل غير صالحة."
+
 def preview_import(db, actor, feature, document_id):
     authorize(db,actor,feature,"create")
     doc=_evidence(db,actor,document_id)
     job=db.scalar(select(IngestionJob).where(IngestionJob.document_id==document_id,IngestionJob.organization_id==actor.organization_id)
         .order_by(IngestionJob.created_at.desc(),IngestionJob.id.desc()).limit(1))
     if not job or job.status!="extracted" or not job.manifest.get("complete"):
-        raise ValueError("quarantined or incomplete extraction cannot be imported")
-    rows=list(db.scalars(select(ExtractedSourceRecord).where(ExtractedSourceRecord.job_id==job.id).order_by(ExtractedSourceRecord.id).limit(101)))
-    if len(rows)>100: raise ValueError("select an import file of at most 100 records")
+        raise ValueError("لا يمكن استيراد مصدر محجور أو غير مكتمل الاستخراج.")
+    rows=list(db.scalars(select(ExtractedSourceRecord).where(ExtractedSourceRecord.job_id==job.id).limit(101)))
+    rows.sort(key=lambda row: (row.locator.get("index", 0), row.locator.get("row") or 0, row.id))
+    if len(rows)>100: raise ValueError("اختر ملف استيراد لا يزيد عن 100 سجل.")
     preview=[]
     for row in rows:
         if set(row.values)=={"text"}:
@@ -322,34 +383,46 @@ def preview_import(db, actor, feature, document_id):
             preview.append({"id":row.id,"locator":row.locator,"manual_required":True,"valid":False,
                 "text_excerpt":row.values["text"][:3000]});continue
         try:
-            values={key:row.values.get(key,"") for key in SCHEMAS[feature]}
-            data=RecordCreate(title=row.values.get("title",""),effective_from=row.values.get("effective_from",""),
-                effective_to=row.values.get("effective_to") or None,values=values,evidence_document_id=document_id)
+            title=import_value(row.values,"title")
+            if not title: raise ValueError("الحقل «الاسم / العنوان» مطلوب.")
+            raw_from=import_value(row.values,"effective_from")
+            if not raw_from: raise ValueError("الحقل «تاريخ بداية السريان» مطلوب.")
+            from_date=import_date(raw_from,"تاريخ بداية السريان")
+            raw_to=import_value(row.values,"effective_to")
+            to_date=import_date(raw_to,"تاريخ نهاية السريان") if raw_to else None
+            if to_date and to_date<=from_date:
+                raise ValueError("«تاريخ نهاية السريان» يجب أن يكون بعد تاريخ البداية.")
+            values={key:import_value(row.values,key) for key in SCHEMAS[feature]}
+            missing=[key for key in SCHEMAS[feature] if not values[key]]
+            if missing:
+                raise ValueError("الخلايا المطلوبة التالية ناقصة: "+"، ".join(f"«{FIELDS[key][0]}»" for key in missing)+". املأها ثم أعد رفع الملف.")
+            data=RecordCreate(title=title,effective_from=from_date,effective_to=to_date,
+                values=values,evidence_document_id=document_id)
             data.values=validate_values(feature,data.values)
             preview.append({"id":row.id,"locator":row.locator,"valid":True,"record":data.model_dump(mode="json")})
-        except ValueError:
-            preview.append({"id":row.id,"locator":row.locator,"valid":False,"error":"required fields, dates or values do not match the schema"})
+        except (ValueError, ValidationError) as exc:
+            preview.append({"id":row.id,"locator":row.locator,"valid":False,"error":_preview_error(exc)})
     return {"document_id":document_id,"source_sha256":doc["sha256"],"items":preview,"job_id":job.id}
 
 def commit_import(db,actor,feature,document_id,record_ids,manual_record=None):
     authorize(db,actor,feature,"create")
     preview=preview_import(db,actor,feature,document_id)
     chosen=[str(i) for i in record_ids]
-    if len(chosen)!=len(set(chosen)): raise ValueError("duplicate selected source record")
-    if bool(chosen)==bool(manual_record): raise ValueError("select rows or supply one manual PDF record")
+    if len(chosen)!=len(set(chosen)): raise ValueError("تم اختيار سجل مصدر مكرر.")
+    if bool(chosen)==bool(manual_record): raise ValueError("اختر صفوفاً من الملف أو أدخل سجلاً يدوياً واحداً من PDF.")
     with rbac._atomic(db):
         _lock(db,actor.organization_id+":intake:"+feature)
         if manual_record:
-            if not any(r.get("manual_required") for r in preview["items"]): raise ValueError("manual mapping is for PDF evidence only")
+            if not any(r.get("manual_required") for r in preview["items"]): raise ValueError("الإدخال اليدوي مخصص لدليل PDF فقط.")
             manual_record.evidence_document_id=document_id
             return [create_record(db,actor,feature,manual_record)]
         by_id={r["id"]:r for r in preview["items"]}
         results=[]
         for record_id in chosen:
             item=by_id.get(record_id)
-            if not item or not item["valid"]: raise ValueError("invalid or foreign import row")
+            if not item or not item["valid"]: raise ValueError("صف المصدر غير صالح أو لا يتبع هذا الملف.")
             # Persist source-row identity for idempotency, never silently duplicate.
             if any(_decode(db,actor,feature,e).get("source_record_id")==record_id for e in _latest(db,actor,feature).values()):
-                raise ValueError("source row already imported")
+                raise ValueError("تم استيراد صف المصدر هذا سابقاً.")
             results.append(create_record(db,actor,feature,RecordCreate(**item["record"]),source_record_id=record_id))
         return results

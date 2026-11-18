@@ -3,9 +3,38 @@
  * @typedef {{items:object[],has_more:boolean,offset?:number,limit?:number}} Page
  */
 import { L } from "./ui.js";
+
+function formatApiDetail(detail) {
+  if (detail === null || detail === undefined || detail === "") return "";
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail))
+    return detail
+      .map((item) =>
+        item && typeof item === "object"
+          ? item.msg || JSON.stringify(item)
+          : String(item),
+      )
+      .join("; ");
+  if (typeof detail === "object") {
+    const parts = [];
+    if (detail.message) parts.push(String(detail.message));
+    if (detail.status) parts.push("status=" + detail.status);
+    if (detail.reason) parts.push("reason=" + detail.reason);
+    if (detail.imported_count !== undefined)
+      parts.push(
+        "imported=" +
+          detail.imported_count +
+          "/" +
+          (detail.record_count === undefined ? "?" : detail.record_count),
+      );
+    return parts.length ? parts.join(" · ") : JSON.stringify(detail);
+  }
+  return String(detail);
+}
+
 export class ApiError extends Error {
-  constructor(status) {
-    super(
+  constructor(status, detail = "") {
+    const base =
       status === 401
         ? L(
             "انتهت الجلسة أو بيانات الدخول غير صحيحة.",
@@ -23,8 +52,8 @@ export class ApiError extends Error {
               )
             : status === 409
               ? L(
-                  "تعارض في الحالة أو سلامة الأدلة أو فصل المسؤوليات.",
-                  "State, evidence integrity or separation-of-duties conflict.",
+                  "تعذر إتمام العملية.",
+                  "The operation could not be completed.",
                 )
               : status === 422
                 ? L(
@@ -39,9 +68,11 @@ export class ApiError extends Error {
                   : L(
                       "الخدمة غير متاحة. تحقق من اتصال الخادم.",
                       "Service unavailable. Check server connectivity.",
-                    ),
-    );
+                    );
+    const extra = formatApiDetail(detail);
+    super(extra ? base + " — " + extra : base);
     this.status = status;
+    this.detail = extra;
   }
 }
 export class ApiClient {
@@ -119,7 +150,20 @@ export class ApiClient {
         this.clear();
         this.onExpiry();
       }
-      if (!response.ok) throw new ApiError(response.status);
+      if (!response.ok) {
+        let detail = "";
+        try {
+          const payload = await response.clone().json();
+          detail = payload?.detail ?? payload?.message ?? "";
+        } catch {
+          try {
+            detail = (await response.clone().text()).trim();
+          } catch {
+            detail = "";
+          }
+        }
+        throw new ApiError(response.status, detail);
+      }
       let payload;
       try {
         payload = response.status === 204 ? null : download ? await response.blob() : await response.json();
