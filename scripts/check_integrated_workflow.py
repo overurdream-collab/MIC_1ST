@@ -22,6 +22,7 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session
 
 from mcias.audit_agents import AGENTS
+from mcias.claim_normalization import FIXED_COLUMNS, FIXED_HEADERS
 from mcias.audit_engine import AuditPolicy, evaluate
 from mcias.mfa import generate_totp
 from mcias.models import Organization, User, Role, Permission, RolePermission, UserRole, MFAFactor, AuditLog
@@ -32,6 +33,7 @@ from mcias.palermo2 import verify
 from mcias.storage import EncryptedStore
 from mcias.models import SourceFile
 from mcias.security import hash_password
+from mcias.services import access_service
 
 ROOT = Path(__file__).resolve().parents[1]
 PASSWORD = 'synthetic_workflow_password_only'
@@ -83,6 +85,14 @@ def run(base_url, chromium=None):
         from mcias.seed.authorization import approve_synthetic
         approve_synthetic(db,organization_id,'development')
         approve_synthetic(db,foreign.id,'development')
+        operator_user = db.get(User, ids['operator']['id'])
+        reviewer_user = db.get(User, ids['reviewer']['id'])
+        foreign_user = db.get(User, ids['foreign']['id'])
+        access_service.replace_grants(db, operator_user, reviewer_user.id, permissions,
+            access_service.revision(db, reviewer_user), 'synthetic workflow reviewer')
+        foreign_root = db.scalar(select(User).where(User.username == 'SYN-seed-rbac-root-' + foreign_organization_id))
+        access_service.replace_grants(db, foreign_root, foreign_user.id, ['profile.read', 'claims.read'],
+            access_service.revision(db, foreign_user), 'synthetic workflow foreign reader')
         db.commit()
     checks = []
     errors = []
@@ -102,9 +112,11 @@ def run(base_url, chromium=None):
         expect(page.locator('main h1')).to_be_visible()
         checks.append('real administrative login with enrolled encrypted MFA')
 
-        def request(method, path, headers=operator_headers, data=None, expected=200):
-            result = page.request.fetch(base_url + path, method=method, headers=headers, data=data)
-            assert result.status == expected, (method, path, result.status)
+        def request(method, path, headers=operator_headers, data=None, expected=200, json_data=None):
+            merged = {**headers, **({'Content-Type': 'application/json'} if json_data is not None else {})}
+            result = page.request.fetch(base_url + path, method=method, headers=merged,
+                                        data=json.dumps(json_data) if json_data is not None else data)
+            assert result.status == expected, (method, path, result.status, result.text())
             return result.json() if 'json' in result.headers.get('content-type', '') else result.body()
 
         def navigate(path):
@@ -127,8 +139,14 @@ def run(base_url, chromium=None):
 
         output = io.StringIO()
         writer = csv.writer(output)
-        writer.writerow(['claim_reference','beneficiary_token','provider_code','service_code','service_date','claimed_amount','currency','diagnosis'])
-        writer.writerow(['SYN-' + unique,'SYN-BENEFICIARY','SYN-PROVIDER','SYN-SERVICE','2026-10-01','200.00','LYD','SYNTHETIC-PRIVATE-DIAGNOSIS'])
+        row = {FIXED_COLUMNS['claim_reference']:'SYN-' + unique, FIXED_COLUMNS['beneficiary_token']:'SYN-BENEFICIARY',
+               FIXED_COLUMNS['beneficiary_name']:'SYN BENEFICIARY', FIXED_COLUMNS['category_code']:'SYN-CATEGORY',
+               FIXED_COLUMNS['provider_code']:'SYN-PROVIDER', FIXED_COLUMNS['service_code']:'SYN-SERVICE',
+               FIXED_COLUMNS['service_date']:'2026-10-01', FIXED_COLUMNS['unit_price']:'200.00',
+               FIXED_COLUMNS['gross_amount']:'200.00', FIXED_COLUMNS['copay_percent']:'0',
+               FIXED_COLUMNS['copay_amount']:'0', FIXED_COLUMNS['claimed_amount']:'200.00'}
+        writer.writerow(FIXED_HEADERS)
+        writer.writerow([row[header] for header in FIXED_HEADERS])
         data = output.getvalue().encode()
         uploaded = upload(data, 'synthetic-workflow.csv')
         assert uploaded['status'] == 'extracted'
@@ -154,6 +172,8 @@ def run(base_url, chromium=None):
             form.get_by_role('button', name='تنفيذ الطلب', exact=True).click()
         assert response.value.status == 201
         batch = response.value.json()['id']
+        request('PUT', '/api/v1/claims/batches/' + batch + '/mapping',
+                json_data={'columns':FIXED_COLUMNS, 'currency':'LYD', 'date_format':'DMY'})
         form = page.locator('.form-panel').filter(has=page.get_by_role('heading', name='استئناف استيراد الدفعة', exact=True))
         form.get_by_label('الدفعة', exact=True).fill(batch)
         form.get_by_role('button', name='تنفيذ الطلب', exact=True).click()

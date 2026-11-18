@@ -4,17 +4,17 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from uuid import uuid4
-from datetime import date
 import pytest
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from playwright.sync_api import sync_playwright, expect
 from sqlalchemy import select
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session
-from mcias.models import User, MFAFactor, Permission, GroupPermission
+from mcias.models import User, MFAFactor
 from mcias.mfa import generate_totp
 from mcias.seed.laptop import ADMIN_PERMISSIONS
-from mcias.services import authorization_service as authority
+from mcias.services import authorization_service as authority, access_service
+from mcias.services.feature_service import READ_PERMISSIONS
 from tests.authorization_fixtures import approve_fixture
 
 
@@ -35,16 +35,13 @@ def run(base_url, chromium):
             nonce = os.urandom(12)
             db.add(MFAFactor(user_id=manager.id, enabled=True,
                 encrypted_secret=nonce + AESGCM(key).encrypt(nonce, api.mfa_secret, manager.id.encode())))
-            for code in ADMIN_PERMISSIONS:
-                if not authority.allowed_in_group(code, 'institution_admin'):
-                    continue
-                permission = db.scalar(select(Permission).where(Permission.code == code))
-                if permission is None:
-                    permission = Permission(code=code); db.add(permission); db.flush()
-                if db.scalar(select(GroupPermission.id).where(GroupPermission.group_id == api.groups['admin'],
-                        GroupPermission.permission_id == permission.id)) is None:
-                    db.add(GroupPermission(organization_id=api.organization_id, group_id=api.groups['admin'],
-                        permission_id=permission.id, granted_by=api.ids['root'], effective_from=date.today()))
+            codes = set(ADMIN_PERMISSIONS)
+            codes.update({'users.create','users.close','users.update','users.read','groups.read','groups.members.add','groups.members.remove'})
+            for values in READ_PERMISSIONS.values(): codes.update(values)
+            codes.update(access_service.registry_codes())
+            codes = sorted(code for code in codes if authority.allowed_in_group(code, 'institution_admin'))
+            access_service.replace_grants(db, db.get(User, api.ids['root']), manager.id, codes,
+                access_service.revision(db, manager), 'Synthetic institution manager permissions')
             db.flush(); approve_fixture(db, api.organization_id, api.ids['root']); db.commit()
         checks=[]; errors=[]; violations=[]; marker=uuid4().hex[:9]
         out=ROOT/'.e2e-output'; out.mkdir(exist_ok=True)
@@ -63,27 +60,27 @@ def run(base_url, chromium):
             page.get_by_label('رمز التحقق (إلزامي للإدارة)', exact=True).fill(generate_totp(api.mfa_secret, int(time.time())//30))
             page.get_by_role('button',name='تسجيل الدخول بأمان',exact=True).click()
             expect(page.locator('#institution-metrics')).to_be_visible()
-            assert page.locator('#sidebar .nav-heading').all_text_contents()==['الرئيسية','المدخلات والبيانات','المطالبات والدفعات','التدقيق والمراجعة','التحليلات','التقارير','مستخدمو الجهة']
+            assert page.locator('#sidebar .nav-heading').all_text_contents()==['الرئيسية','المدخلات','التدقيق والمراجعة','التقارير','الإدارة']
             assert page.locator('[data-metric]').count()==5
             expect(page.locator('[data-metric="health"]')).to_contain_text('جاهز')
-            checks.append('real institution-manager MFA login, five real metrics and exactly seven navigation sections')
+            checks.append('real institution-manager MFA login, five real metrics and five navigation sections')
 
             def navigate(path):
                 page.evaluate('(path)=>{history.pushState({},"",path);dispatchEvent(new PopStateEvent("popstate"));}',path)
             def add_record(path, title, values):
                 navigate(path)
-                expect(page.get_by_role('button',name='إضافة جديد',exact=True)).to_be_visible()
-                page.get_by_role('button',name='إضافة جديد',exact=True).click()
+                add=page.get_by_role('button',name='إضافة',exact=False).first
+                expect(add).to_be_visible();add.click()
                 page.get_by_label('الاسم / العنوان',exact=True).fill(title)
                 for label,value in values.items(): page.get_by_label(label,exact=True).fill(value)
                 page.get_by_role('button',name='حفظ السجل',exact=True).click()
-                expect(page.locator('.intake-card').filter(has_text=title)).to_be_visible()
+                expect(page.locator('tbody tr').filter(has_text=title)).to_be_visible()
             add_record('/institution/inputs/insurers','SYN-insurer '+marker,
-                {'رمز السجل':'SYN-INS-'+marker,'رمز شركة التأمين':'SYN-INSURER-'+marker,'رقم العقد':'SYN-CONTRACT-'+marker})
+                {'الرمز الداخلي':'SYN-INS-'+marker,'شركة التأمين':'SYN-INSURER-'+marker,'رقم العقد':'SYN-CONTRACT-'+marker})
             add_record('/institution/beneficiaries/names','SYN-beneficiary '+marker,
-                {'رمز السجل':'SYN-BEN-'+marker,'معرّف المستفيد':'SYN-PERSON-'+marker,'رمز الفئة':'SYN-CATEGORY'})
+                {'الرمز الداخلي':'SYN-BEN-'+marker,'الرقم التأميني':'SYN-PERSON-'+marker,'الدرجة / الفئة':'SYN-CATEGORY'})
             add_record('/institution/providers/hospitals','SYN-provider '+marker,
-                {'رمز السجل':'SYN-PROV-'+marker,'رمز مقدم الخدمة':'SYN-HOSPITAL-'+marker})
+                {'الرمز الداخلي':'SYN-PROV-'+marker,'مقدم الخدمة':'SYN-HOSPITAL-'+marker})
             navigate('/institution/dashboard')
             expect(page.locator('#institution-metrics')).to_be_visible()
             for name in ('insurers','beneficiaries','providers'):

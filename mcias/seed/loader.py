@@ -17,6 +17,12 @@ NAMESPACE = UUID("31233666-7a1d-44e1-a7d4-5a9725631a3f")
 def identifier(label):
     return str(uuid5(NAMESPACE, "workspace-v1:" + label))
 
+def _activate_reader_grants(db, org_id, user, codes):
+    from mcias.services import access_service
+    root = db.scalar(select(User).where(User.username == "SYN-seed-rbac-root-" + org_id))
+    access_service.replace_grants(db, root, user.id, codes, access_service.revision(db, user),
+        "Synthetic seed reader permissions")
+
 def load(config):
     config.validate()
     raw = files("mcias.seed").joinpath("data/workspace-v1.json").read_bytes()
@@ -37,6 +43,8 @@ def load(config):
                 manifest = dict(previous.details["manifest"])
                 manifest["password"] = "synthetic_e2e_password_only"
                 actor = db.get(User, identifier("reader"))
+                _activate_reader_grants(db, org_id, actor, spec.permissions)
+                db.commit()
                 if db.scalar(select(func.count()).select_from(ClaimEntry).where(ClaimEntry.organization_id == org_id)) != config.count:
                     raise ValueError("seed receipt does not match current database")
                 if config.count > 1000:
@@ -108,6 +116,7 @@ def load(config):
             db.flush()
             from mcias.seed.authorization import approve_synthetic
             approve_synthetic(db,org.id,config.environment)
+            _activate_reader_grants(db, org.id, actor, spec.permissions)
             # Snapshot creation owns its commit. Receipt permits retry without duplicating data.
             manifest = {"username": actor.username, "password": "synthetic_e2e_password_only",
                         "organization_id": org.id, "claim_ids": ids, "batch_id": batch.id,

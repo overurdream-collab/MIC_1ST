@@ -1,6 +1,7 @@
 """Actual Chromium -> FastAPI -> PostgreSQL session/read/logout E2E test."""
 import argparse,json,os
 from pathlib import Path
+from urllib.request import Request,urlopen
 from playwright.sync_api import sync_playwright,expect
 ROOT=Path(__file__).resolve().parents[1]
 p=argparse.ArgumentParser();p.add_argument('--base-url',default='http://127.0.0.1:8001');p.add_argument('--chromium',default=os.getenv('MCIAS_CHROMIUM'));args=p.parse_args()
@@ -28,7 +29,12 @@ with sync_playwright() as pw:
  page=b.new_page(viewport={'width':1440,'height':1000});errors=[];requests=[]
  page.on('pageerror',lambda e:errors.append(str(e)));page.on('request',lambda r:requests.append(r.url))
  page.goto(args.base_url+'/login');page.get_by_label('اسم المستخدم',exact=True).fill(f['username']);page.get_by_label('كلمة المرور',exact=True).fill(f['password']);page.get_by_role('button',name='تسجيل الدخول بأمان',exact=True).click();expect(page.locator('.kpi').first).to_be_visible()
- assert page.locator('.kpi-value').all_text_contents()==['12000.0000','0','0','12'];assert not page.locator('.banner.demo').count();checks.append('real login/session and frozen PostgreSQL report totals')
+ expect(page.locator('#institution-metrics [data-metric="beneficiaries"] .kpi-value')).to_have_text('—');expect(page.locator('#institution-metrics [data-metric="health"] .kpi-value')).to_have_text('جاهز');assert not page.locator('.banner.demo').count();checks.append('real login/session and organization dashboard metrics')
+ login=Request(args.base_url+'/api/v1/auth/login',data=json.dumps({'username':f['username'],'password':f['password']}).encode(),headers={'Content-Type':'application/json'})
+ with urlopen(login) as response:token=json.load(response)['access_token']
+ snapshot=Request(args.base_url+'/api/v1/report-explorer/snapshots?limit=1',headers={'Authorization':'Bearer '+token})
+ with urlopen(snapshot) as response:report=json.load(response)['items'][0]
+ assert report['id']==f['report_id'] and report['summary']==f['expected'];checks.append('frozen PostgreSQL report totals')
  page.evaluate('()=>{history.pushState({},"","/institution/claims");dispatchEvent(new PopStateEvent("popstate"));}');expect(page.locator('tbody tr')).to_have_count(12);assert 'SYNTHETIC_PRIVATE_FIELD_NOT_DISCLOSED' not in page.locator('body').text_content();checks.append('tenant-scoped real claim catalog excludes raw medical fields')
  page.get_by_role('button',name='عرض الدليل',exact=True).first.click();expect(page.locator('h1')).to_have_text('تفاصيل المطالبة');expect(page.locator('main')).to_contain_text('1000.0000');checks.append('real protected claim detail drill-down')
  page.evaluate('()=>{history.pushState({},"","/admin/dashboard");dispatchEvent(new PopStateEvent("popstate"));}');expect(page.locator('main')).to_contain_text('وصول غير مصرح');checks.append('real reader identity cannot enter administrative interface')
