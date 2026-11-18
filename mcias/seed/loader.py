@@ -23,7 +23,7 @@ def _activate_reader_grants(db, org_id, user, codes):
     access_service.replace_grants(db, root, user.id, codes, access_service.revision(db, user),
         "Synthetic seed reader permissions")
 
-def load(config):
+def load(config, *, activate_reader=False):
     config.validate()
     raw = files("mcias.seed").joinpath("data/workspace-v1.json").read_bytes()
     spec = Dataset.model_validate_json(raw)
@@ -43,8 +43,9 @@ def load(config):
                 manifest = dict(previous.details["manifest"])
                 manifest["password"] = "synthetic_e2e_password_only"
                 actor = db.get(User, identifier("reader"))
-                _activate_reader_grants(db, org_id, actor, spec.permissions)
-                db.commit()
+                if activate_reader:
+                    _activate_reader_grants(db, org_id, actor, spec.permissions)
+                    db.commit()
                 if db.scalar(select(func.count()).select_from(ClaimEntry).where(ClaimEntry.organization_id == org_id)) != config.count:
                     raise ValueError("seed receipt does not match current database")
                 if config.count > 1000:
@@ -116,7 +117,9 @@ def load(config):
             db.flush()
             from mcias.seed.authorization import approve_synthetic
             approve_synthetic(db,org.id,config.environment)
-            _activate_reader_grants(db, org.id, actor, spec.permissions)
+            if activate_reader:
+                _activate_reader_grants(db, org.id, actor, spec.permissions)
+                db.commit()
             # Snapshot creation owns its commit. Receipt permits retry without duplicating data.
             manifest = {"username": actor.username, "password": "synthetic_e2e_password_only",
                         "organization_id": org.id, "claim_ids": ids, "batch_id": batch.id,

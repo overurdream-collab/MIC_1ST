@@ -104,7 +104,7 @@ def setup(env):
     # Restart must allow additional user-entered test claims. The seed loader's
     # exact-count receipt is only appropriate on first installation.
     saved=json.loads(state.read_text()) if state.exists() else None
-    seed=saved or load(SeedConfig(owner.render_as_string(hide_password=False),'development'))
+    seed=saved or load(SeedConfig(owner.render_as_string(hide_password=False),'development'), activate_reader=False)
     engine=create_engine(owner,connect_args={'connect_timeout':3})
     try:
         grant_runtime(engine,env['MCIAS_LAPTOP_RUNTIME_PASSWORD'])

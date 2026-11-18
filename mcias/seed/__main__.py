@@ -18,7 +18,7 @@ def main():
     from alembic import command
     from alembic.config import Config
     command.upgrade(Config("alembic.ini"), "head")
-    manifest = load(config)
+    manifest = load(config, activate_reader=True)
     path = Path(args.output); path.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, "w") as output:
