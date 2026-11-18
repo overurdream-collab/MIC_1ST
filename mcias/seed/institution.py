@@ -38,7 +38,8 @@ def ensure_admin(db, org_id, accounts, env, operational_permissions):
         management_scope='institution_admin', effective_from=date.today(), created_by=root.id)
     db.add(group); db.flush()
     template = next(g for g in get_default_groups() if g['code'] == 'admin')
-    codes = set(template['permissions']) | {c for c in operational_permissions if authority.allowed_in_group(c, 'institution_admin')}
+    codes = {c for c in template['permissions'] if authority.allowed_in_group(c, 'institution_admin')}
+    codes |= {c for c in operational_permissions if authority.allowed_in_group(c, 'institution_admin')}
     from mcias.schemas.registry import SCHEMAS
     codes |= {f"registry.{feature}.read" for feature in SCHEMAS}
     codes.add('reference.intake.approve')
@@ -54,8 +55,8 @@ def ensure_admin(db, org_id, accounts, env, operational_permissions):
     # until explicitly activated. Activate this bootstrap account's approved
     # group permissions once; later revocations are never restored by setup.
     from mcias.services import access_service
-    access_service.replace_grants(db, root.id, user.id, sorted(codes),
-        access_service.revision(db, user.id), 'Synthetic institution admin bootstrap')
+    access_service.replace_grants(db, root, user.id, sorted(codes),
+        access_service.revision(db, user), 'Synthetic institution admin bootstrap')
     # Initial test entitlements only. Later revocation is never undone by setup.
     for feature in features.list_features(db):
         if feature.is_container or feature.code.startswith('system.'):

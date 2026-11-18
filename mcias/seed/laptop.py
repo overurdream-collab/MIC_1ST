@@ -319,7 +319,14 @@ def _check_manual_authority(env,controls,request,verify_mfa,verify_inputs):
                 try:request('/api/v1/auth/login',payload);replay_denied=False
                 except HTTPError as exc:replay_denied=exc.code==401
                 technical=name=='SYN-laptop-admin'
-                correct=('super_admin' in context['roles'] and not FINANCIAL_APPROVALS.intersection(context['permissions'])) if technical else context['permissions']==[]
+                permissions=set(context['permissions'])
+                if technical:
+                    correct='super_admin' in context['roles'] and not FINANCIAL_APPROVALS.intersection(permissions)
+                elif name=='SYN-laptop-institution-admin':
+                    correct=('super_admin' not in context['roles']
+                        and {'users.create','reference.intake.approve','registry.inputs.contracts.read'} <= permissions
+                        and not FINANCIAL_APPROVALS.intersection(permissions))
+                else:correct=permissions==set()
                 control(name+'_mfa_and_permissions',missing_denied and replay_denied and correct)
                 if technical and verify_inputs:
                     suffix=secrets.token_hex(6);base='/api/v1/registry/inputs.contracts'
