@@ -6,6 +6,7 @@ const sections = [
   ["المطالبات والدفعات", "Claims and batches", "/institution/claims", "claims", "متابعة المطالبات والدفعات المستوردة", "Track imported claims and batches"],
   ["التدقيق والمراجعة", "Audit and review", "/institution/reviews", "audit", "النتائج والأدلة والمراجعات والاعتراضات", "Findings, evidence, reviews and appeals"],
   ["التحليلات", "Analytics", "/institution/ai-intelligence", "ai", "تحليل البيانات والإشارات والاتجاهات", "Data analysis, signals and trends"],
+  ["المؤشرات التنفيذية", "Executive KPIs", "/institution/executive-kpi", "dashboard", "نظرة تنفيذية على المطابقة والاختلافات وجودة البيانات", "Executive view of matching, differences and data quality"],
   ["التقارير", "Reports", "/institution/reports", "reports", "التقارير المحفوظة والتصدير المصرح", "Frozen reports and authorized exports"],
   ["مستخدمو الجهة", "Institution users", "/institution/users", "beneficiaries", "إدارة الموظفين وإسناد الفئات المعتمدة", "Manage employees and assign approved groups"],
 ];

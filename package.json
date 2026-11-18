@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "test": "node --test tests/frontend/*.test.mjs",
-    "check": "node --check mcias/web_workspace/app.js && node --check mcias/web_workspace/ui.js && node --check mcias/web_workspace/api.js && node --check mcias/web_workspace/views.js"
+    "check": "node --check mcias/web_workspace/app.js && node --check mcias/web_workspace/ui.js && node --check mcias/web_workspace/api.js && node --check mcias/web_workspace/views.js && node --check mcias/web_workspace/executive_kpi.js"
   },
   "devDependencies": { "axe-core": "4.10.3" }
 }

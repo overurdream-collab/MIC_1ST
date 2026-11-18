@@ -70,3 +70,17 @@ test("institution admin has seven ordered sections without planned pages or dupl
   assert.deepEqual(groups.map(g=>g[0]),["الرئيسية","المدخلات والبيانات","المطالبات والدفعات","التدقيق والمراجعة","التحليلات","التقارير","مستخدمو الجهة"]);
   assert.equal(groups.flatMap(g=>g[2]).some(r=>r.kind==="unavailable"||r.kind==="settings"),false);
 });
+
+test("executive KPI dashboard sits under reports and remains a workspace page", () => {
+  const routes = [
+    { path: "/institution/executive-kpi", kind: "executive-kpi" },
+    { path: "/institution/result-reports", kind: "result-reports" },
+  ];
+  const reports = workspaceNavigation(routes, "institution").find(g => g[1] === "Reports");
+  assert.deepEqual(reports[2].map(r => r.path), [
+    "/institution/executive-kpi",
+    "/institution/result-reports",
+  ]);
+  assert.equal(isWorkspacePage(routes[0]), true);
+  assert.equal(isWorkspacePage({ path: "/institution/claims/batches", kind: "batch-list" }), false);
+});

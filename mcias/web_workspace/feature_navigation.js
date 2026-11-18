@@ -42,14 +42,14 @@ export function workspaceNavigation(routes, scope) {
     ['الرئيسية', 'Home', page(`${prefix}/dashboard`)],
     ['المدخلات', 'Inputs', intake],
     ['التدقيق والمراجعة', 'Audit and review', page(`${prefix}/audit-workspace`)],
-    ['التقارير', 'Reports', page(`${prefix}/result-reports`)],
+    ['التقارير', 'Reports', [...page(`${prefix}/executive-kpi`), ...page(`${prefix}/result-reports`)]],
     ['الإدارة', 'Administration', page(`${prefix}/administration`)],
   ];
 }
 
 export function isWorkspacePage(route) {
   return route.kind === 'input-list' && route.feature !== 'inputs.insurers'
-    || /\/(dashboard|audit-workspace|result-reports|administration)$/.test(route.path);
+    || /\/(dashboard|audit-workspace|executive-kpi|result-reports|administration)$/.test(route.path);
 }
 
 export function navigationGroups(routes, scope) {
@@ -80,7 +80,7 @@ export function institutionNavigation(routes) {
     ["المطالبات والدفعات", "Claims and batches", paths(["/institution/claims", "/institution/claims/batches"])],
     ["التدقيق والمراجعة", "Audit and review", paths(["/institution/financial-audit", "/institution/duplicates", "/institution/reviews", "/institution/appeals"])],
     ["التحليلات", "Analytics", paths(["/institution/ai-intelligence", "/institution/anomalies", "/institution/trends", "/institution/cost-optimization"])],
-    ["التقارير", "Reports", paths(["/institution/reports"])],
+    ["التقارير", "Reports", paths(["/institution/executive-kpi", "/institution/reports"])],
     ["مستخدمو الجهة", "Institution users", paths(["/institution/users"])],
   ].filter(group => group[2].length);
 }

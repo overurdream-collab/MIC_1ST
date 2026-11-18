@@ -237,3 +237,6 @@ from mcias.api.result_routes import router as result_files_router
 app.include_router(result_files_router)
 from mcias.api.phase1_routes import router as phase1_rules_router
 app.include_router(phase1_rules_router)
+
+from mcias.api.executive_kpi_routes import router as executive_kpi_router
+app.include_router(executive_kpi_router)
