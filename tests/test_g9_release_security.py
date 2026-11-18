@@ -29,7 +29,7 @@ def test_g9_manifest_pins_exact_artifact_hash_and_blocks_tampering(tmp_path):
     wheel=tmp_path/"mcias-0.1.0-py3-none-any.whl"
     wheel.write_bytes(b"synthetic wheel bytes; never a real medical file")
     manifest=create_manifest({"wheels/mcias-0.1.0-py3-none-any.whl":wheel},COMMIT)
-    assert manifest["migration_head"] == "0025_claim_batch_display"
+    assert manifest["migration_head"] == "0026_audit_resource_id"
     bundle=tmp_path/"bundle"
     (bundle/"wheels").mkdir(parents=True)
     copied=bundle/"wheels"/wheel.name
@@ -49,7 +49,8 @@ def test_g9_manifest_pins_exact_artifact_hash_and_blocks_tampering(tmp_path):
     ("0022_rbac_authority", "BLOCKED"),
     ("0023_insurer_intake", "BLOCKED"),
     ("0024_phase1_nullable_net", "BLOCKED"),
-    ("0025_claim_batch_display", "PASS"),
+    ("0025_claim_batch_display", "BLOCKED"),
+    ("0026_audit_resource_id", "PASS"),
 ])
 def test_g9_runtime_rejects_old_schema_and_accepts_rbac_schema(monkeypatch, revision, expected):
     """Check real migrated databases, without changing the shared suite's revision."""

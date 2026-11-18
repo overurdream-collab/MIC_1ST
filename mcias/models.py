@@ -73,7 +73,7 @@ class AuditLog(Base):
     actor_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
     action: Mapped[str] = mapped_column(String(150), nullable=False)
     resource_type: Mapped[str] = mapped_column(String(100), nullable=False)
-    resource_id: Mapped[str | None] = mapped_column(String(36))
+    resource_id: Mapped[str | None] = mapped_column(String(128))
     details: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)
     organization_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
