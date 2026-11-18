@@ -9,6 +9,7 @@ from datetime import date
 from decimal import Decimal
 from hashlib import sha256
 import json
+import logging
 from types import SimpleNamespace
 from sqlalchemy import select
 from mcias.models import AuditLog, SourceFile
@@ -23,8 +24,18 @@ from mcias.services.rbac_service import _atomic
 from mcias.services.transaction_lock import lock_record
 
 
+logger = logging.getLogger(__name__)
+
+
 class ReferenceCheckConflict(ValueError):
-    pass
+    def __init__(self, message, *, batch_id=None, status=None, reason=None,
+                 imported_count=None, record_count=None):
+        super().__init__(message)
+        self.batch_id = batch_id
+        self.status = status
+        self.reason = reason
+        self.imported_count = imported_count
+        self.record_count = record_count
 
 
 def _text(value):
@@ -181,10 +192,20 @@ def run(db,actor,batch_id):
         batch=db.get(ClaimBatch,batch_id)
         if not batch or batch.organization_id!=actor.organization_id:raise LookupError('Batch not found')
         if batch.status!='imported' or batch.record_count!=batch.imported_count:
-            raise ReferenceCheckConflict('Complete the import before reference validation')
+            reason='batch_not_imported' if batch.status!='imported' else 'import_count_mismatch'
+            logger.warning('reference_check_blocked batch_id=%s organization_id=%s status=%s imported=%s/%s reason=%s',
+                batch.id,actor.organization_id,batch.status,batch.imported_count,batch.record_count,reason)
+            raise ReferenceCheckConflict('Complete the import before reference validation',
+                batch_id=batch.id,status=batch.status,reason=reason,
+                imported_count=batch.imported_count,record_count=batch.record_count)
         claims=list(db.scalars(select(ClaimEntry).where(ClaimEntry.batch_id==batch.id,
             ClaimEntry.organization_id==actor.organization_id).order_by(ClaimEntry.id)))
-        if len(claims)!=batch.record_count or len(claims)>10000:raise ReferenceCheckConflict('Batch count or limit mismatch')
+        if len(claims)!=batch.record_count or len(claims)>10000:
+            logger.warning('reference_check_blocked batch_id=%s organization_id=%s status=%s imported=%s/%s claims=%s reason=batch_count_mismatch',
+                batch.id,actor.organization_id,batch.status,batch.imported_count,batch.record_count,len(claims))
+            raise ReferenceCheckConflict('Batch count or limit mismatch',
+                batch_id=batch.id,status=batch.status,reason='batch_count_mismatch',
+                imported_count=batch.imported_count,record_count=batch.record_count)
         mapping=confirmed_mapping(db,batch);index=ReferenceIndex(db,actor)
         rows=[inspect_line(index,claim,mapping) for claim in claims]
         counts=Counter(r['status'] for r in rows)
@@ -208,9 +229,16 @@ def read(db,actor,batch_id):
     event=db.scalar(_events(actor.organization_id,batch_id).order_by(AuditLog.created_at.desc(),AuditLog.id.desc()).limit(1))
     if not event:raise LookupError('Reference validation not found')
     source=db.get(SourceFile,event.details['source_id'])
-    if source is None:raise ReferenceCheckConflict('Reference validation source missing')
+    if source is None:
+        logger.warning('reference_check_read_conflict batch_id=%s organization_id=%s reason=reference_source_missing',
+            batch_id,actor.organization_id)
+        raise ReferenceCheckConflict('Reference validation source missing',
+            batch_id=batch_id,reason='reference_source_missing')
     dataset=json.loads(registry.store().get(source.storage_key,source.sha256))
     if (dataset['organization_id']!=actor.organization_id or dataset['batch_id']!=batch_id
             or sha256(canonical(dataset)).hexdigest()!=event.details['fingerprint']):
-        raise ReferenceCheckConflict('Reference validation integrity failure')
+        logger.warning('reference_check_read_conflict batch_id=%s organization_id=%s reason=reference_integrity_failure',
+            batch_id,actor.organization_id)
+        raise ReferenceCheckConflict('Reference validation integrity failure',
+            batch_id=batch_id,reason='reference_integrity_failure')
     return {**dataset,'id':event.id,'fingerprint':event.details['fingerprint'],'created_at':event.created_at}

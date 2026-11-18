@@ -129,6 +129,29 @@ def test_read_and_add_do_not_allow_editing_or_other_sections(workspace):
     assert api.client.get('/api/v1/me/features',headers=api.headers['admin']).json()['features']==['inputs.contracts']
 
 
+def test_reference_intake_approval_is_institutional_and_blocks_self_approval(workspace):
+    api=workspace;enable(api,'inputs.approvals');base='/api/v1/registry/inputs.approvals'
+    assert grants(api,['registry.inputs.approvals.create'],user='none').status_code==200
+    data={'title':'موافقة اصطناعية','effective_from':date.today().isoformat(),
+        'values':{'record_code':'SYN-APPROVAL','document_number':'SYN-DOC'}}
+    created=api.client.post(base+'/records',json=data,headers=api.headers['none'])
+    assert created.status_code==201,created.text
+    row=created.json()
+    assert row['approval_status']=='pending_institutional_review'
+    body={'expected_version':row['version']}
+    assert grants(api,['registry.inputs.approvals.read'],user='admin').status_code==200
+    assert api.client.post(base+f"/records/{row['id']}/approve",json=body,headers=api.headers['admin']).status_code==403
+    assert grants(api,['registry.inputs.approvals.read','reference.intake.approve'],user='admin').status_code==200
+    assert grants(api,['registry.inputs.approvals.read','reference.intake.approve'],user='none').status_code==200
+    assert api.client.post(base+f"/records/{row['id']}/approve",json=body,headers=api.headers['none']).status_code==409
+    approved=api.client.post(base+f"/records/{row['id']}/approve",json=body,headers=api.headers['admin'])
+    assert approved.status_code==200,approved.text
+    assert approved.json()['approval_status']=='approved'
+    assert api.client.get(base+f"/records/{row['id']}",headers=api.headers['admin']).json()['approval_status']=='approved'
+    history=api.client.get(base+f"/records/{row['id']}/history",headers=api.headers['admin']).json()['items']
+    assert history[-1]['approval_status']=='approved'
+
+
 def test_atomic_replace_preserves_old_source_and_supports_future_version(workspace):
     api=workspace;base='/api/v1/registry/inputs.contracts'
     original=api.client.post(base+'/records',json=record(),headers=api.headers['root']).json()
@@ -187,3 +210,14 @@ def test_all_synthetic_inputs_are_idempotent_and_do_not_grant_staff_permissions(
     for feature in SCHEMAS:
         response=api.client.get(f'/api/v1/registry/{feature}/records',headers=api.headers['root'])
         assert response.status_code==200 and response.json()['total']>=1
+
+
+def test_institution_assignment_is_effective_in_super_admin_while_migrated_membership_stays_frozen(workspace):
+    api=workspace
+    assert grants(api,['users.read','users.create','groups.read','groups.members.add']).status_code==200
+    path=f"/api/v1/groups/{api.groups['viewer']}/members"
+    assert api.client.post(path,json={'user_id':api.ids['none']},headers=api.headers['admin']).status_code==201
+    with Session(api.engine) as db:
+        admin=db.get(User,api.ids['admin']); assigned=db.get(User,api.ids['none'])
+        assert auth.check_permission_unified(db,assigned,'claims.read')
+        assert not auth.check_permission_unified(db,admin,'claims.read')

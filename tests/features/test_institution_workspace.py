@@ -127,3 +127,47 @@ def test_me_identifies_institution_admin_without_a_fake_legacy_admin_role(instit
     assert admin['institution_admin'] is True and admin['super_admin'] is False
     assert root['super_admin'] is True and root['institution_admin'] is False
     assert 'inputs.insurers' in admin['features'] and 'reference.beneficiaries.read' in admin['permissions']
+
+
+def test_super_admin_renames_organization_and_audits(institution):
+    a = institution
+    response = a.client.put(f'/api/v1/admin/organizations/{a.organization_id}/name',
+        json={'name': 'SYN-اسم الجهة الجديد', 'reason': 'SYN-rename test'}, headers=a.headers['root'])
+    assert response.status_code == 200, response.text
+    assert response.json() == {'id': a.organization_id, 'name': 'SYN-اسم الجهة الجديد', 'changed': True}
+    with Session(a.engine) as db:
+        assert db.get(Organization, a.organization_id).name == 'SYN-اسم الجهة الجديد'
+        audit = db.scalar(select(AuditLog).where(AuditLog.action == 'organization.rename',
+            AuditLog.resource_id == a.organization_id))
+        assert audit and audit.details['after'] == 'SYN-اسم الجهة الجديد'
+    assert a.client.put(f'/api/v1/admin/organizations/{a.other_organization_id}/name',
+        json={'name': 'SYN-other-renamed', 'reason': 'SYN-admin cannot rename'},
+        headers=a.headers['admin']).status_code == 403
+    assert a.client.put(f'/api/v1/admin/organizations/{a.organization_id}/name',
+        json={'name': ' ', 'reason': 'SYN-empty'}, headers=a.headers['root']).status_code == 422
+
+
+def test_super_admin_grants_non_financial_admin_permissions_to_organization(institution, monkeypatch):
+    monkeypatch.setenv('MCIAS_RBAC_AUTHORITY', 'super_admin')
+    a = institution
+    response = a.client.post(f'/api/v1/admin/organizations/{a.organization_id}/grant-admin',
+        json={'reason': 'SYN-admin-grant test'}, headers=a.headers['root'])
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result['groups'] == ['admin'] and (result['granted'] or result['unchanged'])
+    permissions = a.client.get('/api/v1/me/features', headers=a.headers['admin']).json()['permissions']
+    for code in ('ingestion.upload', 'registry.beneficiaries.names.create',
+                 'registry.beneficiaries.names.update', 'users.create', 'reference.intake.approve'):
+        assert code in permissions, code
+    for code in ('claims.approve', 'claims.reject', 'governance.approve', 'reference.approve'):
+        assert code not in permissions, code
+    schema = a.client.get('/api/v1/registry/beneficiaries.names/schema', headers=a.headers['admin']).json()
+    assert schema['permissions']['create'] is True and schema['permissions']['upload'] is True
+    with Session(a.engine) as db:
+        audit = db.scalar(select(AuditLog).where(AuditLog.action == 'organization.admin_grant',
+            AuditLog.resource_id == a.organization_id))
+        assert audit and audit.details['permission_count'] > 0
+    assert a.client.post(f'/api/v1/admin/organizations/{a.organization_id}/grant-admin',
+        json={'reason': 'SYN-admin-forbidden'}, headers=a.headers['admin']).status_code == 403
+    assert a.client.post(f'/api/v1/admin/organizations/{a.other_organization_id}/grant-admin',
+        json={'reason': 'SYN-no-admin-group'}, headers=a.headers['root']).status_code == 409

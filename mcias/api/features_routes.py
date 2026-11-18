@@ -1,4 +1,5 @@
 """Feature administration is technical only; never a financial approval bypass."""
+from datetime import timezone
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, Request
 from pydantic import Field
@@ -7,6 +8,7 @@ from mcias.api import dependencies as deps, queries
 from mcias.models import Organization
 from mcias.schemas.common import Close, Input
 from mcias.services import feature_service as features
+from mcias.services import organization_admin_service as org_admin
 from mcias.services.authorization_service import institution_admin
 
 def no_store(response: Response):
@@ -19,6 +21,13 @@ class FeatureBatch(Input):
     codes: list[str] = Field(max_length=34)
     expected_revision: str = Field(pattern=r"^[a-f0-9]{64}$")
     reason: str = Field(default="", max_length=2000)
+
+class OrganizationName(Input):
+    name: str = Field(min_length=1, max_length=200)
+    reason: str = Field(min_length=1, max_length=500)
+
+class OrganizationAdminGrant(Input):
+    reason: str = Field(min_length=1, max_length=500)
 
 def admin(actor=Depends(deps.require_auth), db=Depends(deps.get_db)):
     # Narrow, existing MFA super-admin bootstrap for technical feature governance.
@@ -55,6 +64,48 @@ def organizations(offset: int = Query(0, ge=0), limit: int = Query(100, ge=1, le
     return queries.page(db, select(Organization).order_by(Organization.name, Organization.id), offset, limit,
         lambda r: {"id": r.id, "name": r.name})
 
+@router.get("/admin/organizations")
+def admin_organizations(offset: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=100),
+                        actor=Depends(admin), db=Depends(deps.get_db)):
+    return queries.page(db, select(Organization).order_by(Organization.name, Organization.id), offset, limit,
+        lambda r: {"id": r.id, "name": r.name})
+
+@router.get("/admin/organizations/{org_id}/admin-state")
+def admin_organization_state(org_id: UUID, actor=Depends(admin), db=Depends(deps.get_db)):
+    try:
+        return org_admin.state(db, actor, str(org_id))
+    except LookupError:
+        raise HTTPException(404, "organization not found") from None
+    except PermissionError:
+        raise HTTPException(403, "MFA-enabled super_admin required") from None
+
+@router.put("/admin/organizations/{org_id}/name")
+def rename_organization(org_id: UUID, payload: OrganizationName, actor=Depends(admin), db=Depends(deps.get_db)):
+    try:
+        result = org_admin.rename(db, actor, str(org_id), payload.name, payload.reason)
+        db.commit()
+        return result
+    except LookupError:
+        db.rollback(); raise HTTPException(404, "organization not found") from None
+    except PermissionError:
+        db.rollback(); raise HTTPException(403, "MFA-enabled super_admin required") from None
+    except ValueError as exc:
+        db.rollback(); raise HTTPException(422, str(exc)) from None
+
+@router.post("/admin/organizations/{org_id}/grant-admin")
+def grant_organization_admin(org_id: UUID, payload: OrganizationAdminGrant,
+                             actor=Depends(admin), db=Depends(deps.get_db)):
+    try:
+        result = org_admin.grant_admin_permissions(db, actor, str(org_id), payload.reason)
+        db.commit()
+        return result
+    except LookupError:
+        db.rollback(); raise HTTPException(404, "organization not found") from None
+    except PermissionError:
+        db.rollback(); raise HTTPException(403, "MFA-enabled super_admin required") from None
+    except ValueError as exc:
+        db.rollback(); raise HTTPException(409, str(exc)) from None
+
 @router.get("/organizations/{org_id}/features")
 def organization_features(org_id: UUID, actor=Depends(deps.require_auth), db=Depends(deps.get_db)):
     _organization(db, org_id, actor)
@@ -79,11 +130,14 @@ def batch(org_id: UUID, payload: FeatureBatch, actor=Depends(admin), db=Depends(
 @router.get("/me/features")
 def mine(request: Request, response: Response, actor=Depends(deps.require_auth), db=Depends(deps.get_db)):
     response.headers["Cache-Control"] = "no-store"
+    expires_at = request.state.rbac_session_expires_at
+    if expires_at is not None and expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
     return {"organization_id": actor.organization_id, "features": features.get_visible_features(db, actor),
         "authority": __import__('mcias.services.authorization_service',fromlist=['authority_mode']).authority_mode(),
         "institution_admin": institution_admin(db, actor),
         "permissions": features.permission_codes(db, actor), "super_admin": features.is_super_admin(db, actor),
-        "expires_at": request.state.rbac_session_expires_at,
+        "expires_at": expires_at,
         "user": {"id": actor.id, "username": actor.username},
         "organization": {"id": actor.organization_id, "name": db.get(Organization, actor.organization_id).name},
         "roles": ["super_admin"] if features.is_super_admin(db, actor) else []}

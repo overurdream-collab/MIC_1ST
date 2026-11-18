@@ -12,6 +12,8 @@ class ClaimBatch(Base):
     ingestion_document_id: Mapped[str]=mapped_column(ForeignKey("ingestion_documents.id"),nullable=False)
     created_by: Mapped[str]=mapped_column(ForeignKey("users.id"),nullable=False)
     status: Mapped[str]=mapped_column(String(32),nullable=False,default="staged")
+    display_name: Mapped[str]=mapped_column(String(200),nullable=False,default="دفعة بلا اسم")
+    entry_date: Mapped[date]=mapped_column(Date,nullable=False,default=date.today)
     source_sha256: Mapped[str]=mapped_column(String(64),nullable=False)
     record_count: Mapped[int]=mapped_column(Integer,nullable=False,default=0)
     imported_count: Mapped[int]=mapped_column(Integer,nullable=False,default=0)

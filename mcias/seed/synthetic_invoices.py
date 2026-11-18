@@ -4,8 +4,8 @@ from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4
 
 def invoice_pdf(lines):
-    if not lines or any(not str(row['invoice_reference']).startswith('SYN-') for row in lines):
-        raise ValueError('Synthetic invoice references must start with SYN-')
+    if not lines or any(not str(row['invoice_reference']).startswith(('SYN-','INV-')) for row in lines):
+        raise ValueError('Synthetic invoice references must start with SYN- or INV-')
     output=BytesIO();pdf=canvas.Canvas(output,pagesize=A4,invariant=1)
     for row in lines:
         pdf.setFont('Helvetica-Bold',17);pdf.drawString(40,800,'SYNTHETIC INVOICE - NOT A REAL INVOICE')

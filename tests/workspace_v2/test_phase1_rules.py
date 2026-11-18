@@ -68,7 +68,7 @@ def phase1_file(api, result_id, color, headers=None):
     return load_workbook(BytesIO(response.content))
 
 
-def first_line(api, result, invoice='SYN-INVOICE-1', service='SYN زيارة طبيب'):
+def first_line(api, result, invoice='INV-1001', service='زيارة طبيب'):
     for line in phase1_lines(api, result['id']):
         values = line['values']
         if values.get('رقم الفاتورة') == invoice and values.get('الخدمة') == service:
@@ -109,7 +109,7 @@ def test_missing_net_is_computed_and_accepted(linked):
     assert any('الصافي' in note for note in line['notes'])
     green = phase1_file(linked, result['id'], 'green')
     row = next(row for row in green.active.values
-               if row[0] == 'SYN-INVOICE-1' and row[5] == 'SYN زيارة طبيب')
+               if row[0] == 'INV-1001' and row[5] == 'زيارة طبيب')
     assert Decimal(row[13]) == Decimal('900')
     assert row[11] is None
 
@@ -136,7 +136,7 @@ def test_wrong_price_rejects_with_pricing_reason(linked):
     rows = list(red.active.values)
     tariff_index = rows[0].index('سبب التسعيرة')
     row = next(row for row in rows[1:]
-               if row[0] == 'SYN-INVOICE-1' and row[5] == 'SYN زيارة طبيب')
+               if row[0] == 'INV-1001' and row[5] == 'زيارة طبيب')
     assert row[tariff_index]
 
 
@@ -151,9 +151,9 @@ def test_unknown_beneficiary_rejects_with_beneficiary_reason(linked):
 
 def test_duplicate_line_is_rejected_with_duplicate_reason(linked):
     duplicate = {
-        (3, 'رقم الفاتورة'): 'SYN-INVOICE-1', (3, 'الرقم التأميني'): 'SYN-INS-EMPLOYEE',
-        (3, 'اسم المستفيد'): 'SYN موظف تجريبي', (3, 'الدرجة'): 'B',
-        (3, 'مقدم الخدمة'): 'SYN مستشفى النور', (3, 'الخدمة'): 'SYN زيارة طبيب',
+        (3, 'رقم الفاتورة'): 'INV-1001', (3, 'الرقم التأميني'): '1000000001',
+        (3, 'اسم المستفيد'): 'أحمد محمد', (3, 'الدرجة'): 'أساسي',
+        (3, 'مقدم الخدمة'): 'مستشفى النور', (3, 'الخدمة'): 'زيارة طبيب',
         (3, 'السعر'): '1000', (3, 'المطلوب'): '1000', (3, 'نسبة التحمل'): '10',
         (3, 'إجمالي التحمل'): '100', (3, 'الصافي'): '900',
     }
@@ -180,7 +180,7 @@ def test_red_file_lists_each_reason_in_its_own_column(linked):
     rows = list(red.active.values)
     assert 'سبب التسعيرة' in rows[0] and 'سبب المستفيد' in rows[0]
     row = next(row for row in rows[1:]
-               if row[0] == 'SYN-INVOICE-1' and row[5] == 'SYN زيارة طبيب')
+               if row[0] == 'INV-1001' and row[5] == 'زيارة طبيب')
     assert row[rows[0].index('سبب التسعيرة')]
     assert row[rows[0].index('سبب المستفيد')]
 

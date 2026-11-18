@@ -1,4 +1,4 @@
-import { L, el, button, panel, empty, loading, errorState, openDrawer } from './ui.js';
+import { L, el, button, panel, empty, loading, errorState, openDrawer, toast } from './ui.js';
 
 const labels={invoice:['فاتورة الخدمة — نقصها يعلّق البند','Service invoice — missing invoice holds the line'],beneficiary_enrollment:['وجود المستفيد وسريان الاشتراك','Beneficiary and enrollment validity'],beneficiary_name:['مطابقة الاسم','Name matching'],
   category:['الفئة','Category'],source_category:['الفئة الواردة','Source category'],provider:['المزود','Provider'],service:['الخدمة','Service'],
@@ -16,7 +16,7 @@ export async function referenceChecks(ctx,batchId,target,refresh){
   const content=el('div');content.append(loading());box.append(content);
   box.append(button(L('فحص / إعادة فحص المدخلات','Validate / revalidate references'),async()=>{
     try{content.replaceChildren(loading());await ctx.api.request(`/api/v1/claims/batches/${batchId}/reference-checks`,{method:'POST'});await refresh();}
-    catch(error){content.replaceChildren(errorState(error));}}));
+    catch(error){content.replaceChildren(errorState(error));toast(error.message);}}));
   try{
     const result=await ctx.api.request(`/api/v1/claims/batches/${batchId}/reference-checks?limit=100`);
     const summary=el('p',`${L('مطابق','Matched')}: ${result.summary.MATCHED} · ${L('اختلاف','Difference')}: ${result.summary.REVIEW_REQUIRED} · ${L('ناقص','Incomplete')}: ${result.summary.BLOCKED}`);
@@ -34,5 +34,5 @@ export async function referenceChecks(ctx,batchId,target,refresh){
       }));tr.append(action);body.append(tr);}
     table.append(body);wrap.append(table);content.replaceChildren(summary,wrap);
     if(result.has_more)content.append(el('p',L('تظهر أول 100 نتيجة؛ بقية البنود محفوظة ويمكن طلبها من API بالترقيم.','Showing the first 100 results; remaining rows are preserved and paginated through the API.')));
-  }catch(error){content.replaceChildren(error.status===404?empty(L('لم يُنفذ الفحص بعد','Not validated yet'),L('أكمل الاستيراد ثم افحص المدخلات.','Complete the import, then validate references.')):errorState(error));}
+  }catch(error){content.replaceChildren(error.status===404?empty(L('لم يُنفذ الفحص بعد','Not validated yet'),L('أكمل الاستيراد ثم افحص المدخلات.','Complete the import, then validate references.')):errorState(error));if(error.status!==404)toast(error.message);}
 }

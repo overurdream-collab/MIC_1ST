@@ -1,8 +1,16 @@
 """Read-only XLSX parser; never evaluates formulas or executes macros."""
 import io
+from datetime import date, datetime
 from openpyxl import load_workbook
 from mcias.ingestion.schemas import Extraction, ExtractedRecord, Locator
 from mcias.ingestion.quarantine import item
+
+def _source_value(value):
+    if isinstance(value, datetime):
+        return value.strftime("%d/%m/%Y")
+    if isinstance(value, date):
+        return value.strftime("%d/%m/%Y")
+    return "" if value is None else str(value)
 
 def parse(data: bytes) -> Extraction:
     book = load_workbook(io.BytesIO(data), read_only=True, data_only=False, keep_links=False)
@@ -31,7 +39,7 @@ def parse(data: bytes) -> Extraction:
                 if any(cell is not None and getattr(cell, "data_type", None) == "f" for cell in values):
                     result.quarantined.append(item("formula cell", "row", row_index))
                     continue
-                result.records.append(ExtractedRecord(Locator("sheet", sheet_index, row_index), {key: "" if value is None else str(value) for key, value in zip(names, (cell.value for cell in values))}))
+                result.records.append(ExtractedRecord(Locator("sheet", sheet_index, row_index), {key: _source_value(value) for key, value in zip(names, (cell.value for cell in values))}))
                 result.units_processed += 1
     finally:
         book.close()

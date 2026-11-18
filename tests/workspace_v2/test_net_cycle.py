@@ -78,7 +78,7 @@ def test_one_complete_cycle_with_real_invoice_policy_snapshot_approval_and_expor
     with ZipFile(BytesIO(raw)) as archive:
         assert set(archive.namelist())=={'accepted.xlsx','requires_review.xlsx'}
         assert load_workbook(BytesIO(archive.read('accepted.xlsx')),read_only=True).active.max_row==2
-        assert load_workbook(BytesIO(archive.read('requires_review.xlsx')),read_only=True).active.max_row==4
+        assert load_workbook(BytesIO(archive.read('requires_review.xlsx')),read_only=True).active.max_row==1
     assert_source_unchanged(api,batch)
 
 
@@ -91,13 +91,14 @@ def test_multi_case_xlsx_has_one_exclusive_file_per_service_line(cycle):
     by_id={r['line_id']:r for r in run['rows']}
     assert by_id[batch.identities[cases[3]['invoice_reference']]]['reason']=='missing_invoice'
     result,raw=result_files(api,batch.batch_id);assert result['summary']['counts']==run['counts']
-    ids=[]
+    ids=[];expected={'accepted.xlsx':2,'requires_review.xlsx':4}
     with ZipFile(BytesIO(raw)) as archive:
+        assert set(archive.namelist())==set(expected)
         for name in archive.namelist():
             rows=list(load_workbook(BytesIO(archive.read(name)),read_only=True).active.values)
-            assert len(rows)==2
-            ids.append(rows[1][0])
-            if name=='held.xlsx':assert 'نقص المرفقات' in str(rows[1][9])
+            assert len(rows)==expected[name],(name,len(rows))
+            ids.extend(row[0] for row in rows[1:])
+            if name=='requires_review.xlsx':assert any('نقص المرفقات' in str(row[9]) for row in rows[1:])
     assert len(ids)==len(set(ids))==len(cases)
     assert set(ids)==set(batch.identities.values())
     rejected=by_id[batch.identities[cases[1]['invoice_reference']]]
@@ -289,8 +290,8 @@ def test_changed_invoice_evidence_requires_reaudit_and_keeps_old_frozen_output(c
     original,original_zip=result_files(api,batch.batch_id)
     line_id=run['rows'][0]['line_id']
     corrected=invoice_pdf([{'invoice_reference':'SYN-CORRECTED-INVOICE-1',
-        'beneficiary':'SYN-INS-EMPLOYEE','provider':'SYN-LINKED-HOSPITAL',
-        'service':'SYN-VISIT','service_date':batch.cases[0]['date'],
+        'beneficiary':'1000000001','provider':'مستشفى النور',
+        'service':'زيارة طبيب','service_date':batch.cases[0]['date'],
         'gross':'1000','copay':'100','net':'900','currency':'LYD'}])
     assert sha256(corrected).digest()!=sha256(batch.invoice_raw).digest()
     upload=api.client.post('/api/v1/ingestion/uploads?filename=SYN-corrected-invoice.pdf',

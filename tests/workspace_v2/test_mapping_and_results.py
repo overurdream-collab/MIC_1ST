@@ -1,11 +1,12 @@
 """Real upload/import/export; synthetic pre-existing G5 evidence, not agent acceptance."""
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from hashlib import sha256
 from io import BytesIO
 from types import SimpleNamespace
 from zipfile import ZipFile
 import json
+import logging
 import pytest
 from openpyxl import load_workbook, Workbook
 from sqlalchemy import select
@@ -15,7 +16,7 @@ from tests.features.conftest import features_api
 from tests.workspace_v2.test_access_and_registry import workspace
 from mcias.models import SourceFile
 from mcias.models_claims import ClaimEntry, ClaimBatch
-from mcias.models_ingestion import IngestionDocument
+from mcias.models_ingestion import ExtractedSourceRecord, IngestionDocument, IngestionJob
 from mcias.models_audit import AuditSnapshot
 from mcias.audit_agents import AGENTS
 from mcias.audit_engine import AuditPolicy, evaluate_net
@@ -111,6 +112,19 @@ def test_arabic_mapping_imports_net_and_preserves_original_bytes(workspace):
     assert api.client.put('/api/v1/claims/batches/'+batch+'/mapping',json=mapping(),headers=api.headers['root']).status_code==409
 
 
+def test_excel_date_cells_and_iso_dates_are_accepted(workspace):
+    book=load_workbook(BytesIO(arabic_workbook()));sheet=book.active
+    sheet['G2']=datetime(2026,6,8);sheet['G3']='2026-06-08'
+    output=BytesIO();book.save(output)
+    api=workspace;batch,_=upload_batch(api,output.getvalue())
+    path='/api/v1/claims/batches/'+batch
+    assert api.client.put(path+'/mapping',json=mapping(),headers=api.headers['root']).status_code==200
+    preview=api.client.get(path+'/preview?limit=10',headers=api.headers['root'])
+    assert preview.status_code==200 and all(row['valid'] for row in preview.json()['rows']),preview.text
+    response=api.client.post(path+'/resume',headers=api.headers['root'])
+    assert response.status_code==200 and response.json()['imported_count']==4,response.text
+
+
 def test_gross_column_is_rejected_and_mapping_cannot_cross_tenants(workspace):
     api=workspace;batch,_=upload_batch(api,arabic_workbook());payload=mapping();payload['columns']['claimed_amount']='المطلوب'
     assert api.client.put('/api/v1/claims/batches/'+batch+'/mapping',json=payload,headers=api.headers['root']).status_code==409
@@ -133,6 +147,47 @@ def test_invalid_required_cell_rejects_entire_workbook_without_partial_import(wo
         assert db.scalar(select(ClaimEntry.id).where(ClaimEntry.batch_id==batch)) is None
 
 
+def test_invalid_source_can_be_rechecked_after_source_correction(workspace):
+    book=load_workbook(BytesIO(arabic_workbook()));book.active['B3']='   '
+    output=BytesIO();book.save(output)
+    api=workspace;batch,doc=upload_batch(api,output.getvalue())
+    base='/api/v1/claims/batches/'+batch
+    assert api.client.put(base+'/mapping',json=mapping(),headers=api.headers['root']).status_code==200
+    first=api.client.post(base+'/resume',headers=api.headers['root'])
+    assert first.json()['status']=='invalid_source' and first.json()['imported_count']==0,first.text
+    with Session(api.engine) as db:
+        job=db.scalar(select(IngestionJob).where(IngestionJob.document_id==doc).order_by(IngestionJob.created_at.desc()))
+        for record in db.scalars(select(ExtractedSourceRecord).where(ExtractedSourceRecord.job_id==job.id)):
+            values=dict(record.values)
+            if not str(values.get('الرقم التأميني','')).strip():
+                values['الرقم التأميني']='SYN-BENEFICIARY'
+                record.values=values
+        db.commit()
+    second=api.client.post(base+'/resume',headers=api.headers['root'])
+    assert second.status_code==200,second.text
+    assert second.json()['status']=='imported' and second.json()['imported_count']==4,second.text
+
+
+def test_batch_name_and_entry_date_are_stored_and_listed(workspace):
+    api=workspace;raw=arabic_workbook()
+    upload=api.client.post('/api/v1/ingestion/uploads?filename=SYN-named-claims.xlsx',content=raw,
+        headers={**api.headers['root'],'Content-Type':'application/octet-stream'})
+    assert upload.status_code==200,upload.text
+    response=api.client.post('/api/v1/claims/batches/from-document/'+upload.json()['document_id'],
+        json={'display_name':'مطالبات أكتوبر','entry_date':'2026-11-01'},headers=api.headers['root'])
+    assert response.status_code==201,response.text
+    batch=response.json();assert batch['display_name']=='مطالبات أكتوبر' and batch['entry_date']=='2026-11-01'
+    detail=api.client.get('/api/v1/claims/batches/'+batch['id'],headers=api.headers['root']).json()
+    assert detail['display_name']=='مطالبات أكتوبر' and detail['entry_date']=='2026-11-01'
+    listing=api.client.get('/api/v1/workspace/catalog/batches?limit=100',headers=api.headers['root']).json()
+    row=next(item for item in listing['items'] if item['id']==batch['id'])
+    assert row['display_name']=='مطالبات أكتوبر' and row['entry_date']=='2026-11-01'
+    assert api.client.put('/api/v1/claims/batches/'+batch['id']+'/mapping',json=mapping(),headers=api.headers['root']).status_code==200
+    assert api.client.post('/api/v1/claims/batches/'+batch['id']+'/resume',headers=api.headers['root']).status_code==200
+    entries=api.client.get('/api/v1/claims/batches/'+batch['id']+'/entries',headers=api.headers['root']).json()['entries']
+    assert entries and all(item['beneficiary_name'] and item['beneficiary_token'] and item['category_code']
+        and item['provider_code'] and item['service_code'] for item in entries)
+
 def test_wrong_template_headers_are_rejected_before_batch_creation(workspace):
     book=load_workbook(BytesIO(arabic_workbook()));book.active['A1']='رقم الفاتورة غير المعتمد'
     output=BytesIO();book.save(output)
@@ -140,7 +195,24 @@ def test_wrong_template_headers_are_rejected_before_batch_creation(workspace):
         content=output.getvalue(),headers={**api.headers['root'],'Content-Type':'application/octet-stream'})
     assert upload.status_code==200,upload.text
     response=api.client.post('/api/v1/claims/batches/from-document/'+upload.json()['document_id'],headers=api.headers['root'])
-    assert response.status_code==409 and 'approved template' in response.text
+    assert response.status_code==409
+    detail=response.json()['detail']
+    assert 'أعد تسمية العمود من «رقم الفاتورة غير المعتمد» إلى «رقم الفاتورة»' in detail
+    assert 'يجب أن تكون الترويسات الـ12 مطابقة تماماً' in detail
+
+
+def test_header_mismatch_message_names_the_exact_rename(workspace):
+    book=load_workbook(BytesIO(arabic_workbook()));book.active['I1']='المطلوب قبل التحمل'
+    output=BytesIO();book.save(output)
+    api=workspace;upload=api.client.post('/api/v1/ingestion/uploads?filename=SYN-header-rename.xlsx',
+        content=output.getvalue(),headers={**api.headers['root'],'Content-Type':'application/octet-stream'})
+    assert upload.status_code==200,upload.text
+    response=api.client.post('/api/v1/claims/batches/from-document/'+upload.json()['document_id'],headers=api.headers['root'])
+    assert response.status_code==409
+    assert response.json()['detail']==(
+        'أعد تسمية العمود من «المطلوب قبل التحمل» إلى «المطلوب»، ثم ارفع الملف من جديد. '
+        'يجب أن تكون الترويسات الـ12 مطابقة تماماً: رقم الفاتورة، الرقم التأميني، اسم المستفيد، '
+        'الدرجة، مقدم الخدمة، الخدمة، تاريخ الخدمة، السعر، المطلوب، نسبة التحمل، إجمالي التحمل، الصافي.')
 
 
 def test_two_files_are_disjoint_complete_and_idempotent(workspace):
@@ -209,3 +281,32 @@ def test_outputs_require_completed_import_and_do_not_modify_batch(workspace):
     api=workspace;batch,_=upload_batch(api,arabic_workbook())
     assert api.client.post('/api/v1/result-files/batches/'+batch,headers=api.headers['root']).status_code==409
     with Session(api.engine) as db:assert db.get(ClaimBatch,batch).imported_count==0
+
+
+def test_reference_checks_return_structured_incomplete_batch_detail(workspace):
+    api=workspace;batch,_=upload_batch(api,arabic_workbook())
+    response=api.client.post('/api/v1/claims/batches/'+batch+'/reference-checks',headers=api.headers['root'])
+    assert response.status_code==409,response.text
+    detail=response.json()['detail']
+    assert detail['batch_id']==batch
+    assert detail['status']=='staged'
+    assert detail['reason']=='batch_not_imported'
+    assert detail['imported_count']==0 and detail['record_count']==4
+    assert detail['message']=='Complete the import before reference validation'
+
+
+def test_workbook_header_mismatch_is_logged_without_leaking_source(workspace,caplog):
+    api=workspace
+    book=Workbook();sheet=book.active
+    sheet.append(['عمود غير معتمد '+str(index) for index in range(12)])
+    sheet.append(['SYN-VALUE']*12)
+    raw=BytesIO();book.save(raw)
+    upload=api.client.post('/api/v1/ingestion/uploads?filename=SYN-wrong-headers.xlsx',content=raw.getvalue(),
+        headers={**api.headers['root'],'Content-Type':'application/octet-stream'})
+    assert upload.status_code==200,upload.text
+    with caplog.at_level(logging.WARNING,logger='mcias.claim_batches'):
+        response=api.client.post('/api/v1/claims/batches/from-document/'+upload.json()['document_id'],
+            headers=api.headers['root'])
+    assert response.status_code==409,response.text
+    assert 'claim_batch_header_mismatch' in caplog.text
+    assert 'missing=' in caplog.text and 'unexpected=' in caplog.text

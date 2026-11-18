@@ -7,7 +7,7 @@ from starlette.concurrency import run_in_threadpool
 from sqlalchemy.exc import DBAPIError
 from mcias.api import dependencies as deps
 from mcias.api.features_routes import no_store
-from mcias.schemas.registry import RecordCreate, RecordVersion, RecordReplace, RecordClose, ImportCommit, SCHEMAS, FIELDS, FIELD_LIMITS
+from mcias.schemas.registry import RecordCreate, RecordVersion, RecordReplace, RecordClose, RecordApprove, ImportCommit, SCHEMAS, FIELDS, FIELD_LIMITS, IMPORT_EXAMPLES
 from mcias.services import authorization_service as authority
 from mcias.services import registry_service as r
 from mcias.services.feature_service import permitted
@@ -34,7 +34,9 @@ def schema(feature:str,actor=Depends(deps.require_auth),db=Depends(deps.get_db))
     else:
         permissions={operation:permitted(db,actor,*(tuple(c[:-5]+'.'+operation for c in r.f.READ_PERMISSIONS[feature] if c.endswith('.read'))+('reference.write',))) for operation in ('create','close')}
         permissions['update']=permissions['create'] and permissions['close']
-    return {"feature":feature,"fields":[{"key":key,"ar":FIELDS[key][0],"en":FIELDS[key][1],"type":FIELDS[key][2],"max_length":FIELD_LIMITS.get(key,200)} for key in SCHEMAS[feature]],
+    permissions['approve']=authority.check_permission_unified(db,actor,r.INTAKE_APPROVAL_PERMISSION)
+    permissions['upload']=authority.check_permission_unified(db,actor,'ingestion.upload')
+    return {"feature":feature,"fields":[{"key":key,"ar":FIELDS[key][0],"en":FIELDS[key][1],"type":FIELDS[key][2],"max_length":FIELD_LIMITS.get(key,200),"example":IMPORT_EXAMPLES.get(key,'')} for key in SCHEMAS[feature]],
         "permissions":permissions,
         "relationships":r.relationship_options(db,actor,feature),
         "term_fields":[{'key':key,'ar':TERM_LABELS[key][0],'en':TERM_LABELS[key][1],
@@ -66,6 +68,10 @@ def history(feature:str,record_id:UUID,actor=Depends(deps.require_auth),db=Depen
 @router.post("/{feature}/records/{record_id}/close")
 def close(feature:str,record_id:UUID,payload:RecordClose,actor=Depends(deps.require_auth),db=Depends(deps.get_db)):
     return perform(db,lambda:r.close_record(db,actor,feature,str(record_id),payload.expected_version,payload.reason))
+
+@router.post("/{feature}/records/{record_id}/approve")
+def approve(feature:str,record_id:UUID,payload:RecordApprove,actor=Depends(deps.require_auth),db=Depends(deps.get_db)):
+    return perform(db,lambda:r.approve_record(db,actor,feature,str(record_id),payload.expected_version))
 
 @router.post("/{feature}/records/{record_id}/versions",status_code=201)
 def version(feature:str,record_id:UUID,payload:RecordVersion,actor=Depends(deps.require_auth),db=Depends(deps.get_db)):

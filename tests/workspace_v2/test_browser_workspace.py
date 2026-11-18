@@ -74,8 +74,8 @@ def test_five_sections_reference_tables_and_permissions_in_browser(workspace,mon
         page.locator('[name=claims-file]').set_input_files({'name':'SYN-browser-claims.xlsx',
             'mimeType':'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet','buffer':arabic_workbook()})
         page.get_by_role('button',name='رفع ومعاينة',exact=True).click()
-        page.get_by_role('button',name='فحص الملف واستيراده بالكامل',exact=True).click()
-        page.get_by_role('button',name='فحص الملف ثم الاستيراد',exact=True).click()
+        page.get_by_role('button',name='إكمال الاستيراد',exact=True).click()
+        page.get_by_role('button',name='بدء الاستيراد الكامل',exact=True).click()
         page.get_by_role('button',name='تجهيز ملفي النتائج',exact=True).click()
         page.get_by_text('مرفوض — الملف الأحمر: 4',exact=True).wait_for()
         with page.expect_download() as event:
@@ -98,10 +98,10 @@ def test_five_sections_reference_tables_and_permissions_in_browser(workspace,mon
         page.locator('[name=claims-file]').set_input_files({'name':'SYN-linked-reference-claims.xlsx',
             'mimeType':'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet','buffer':sample_workbook()})
         page.get_by_role('button',name='رفع ومعاينة',exact=True).click()
-        page.get_by_role('button',name='فحص الملف واستيراده بالكامل',exact=True).click()
-        page.get_by_role('button',name='فحص الملف ثم الاستيراد',exact=True).click()
+        page.get_by_role('button',name='إكمال الاستيراد',exact=True).click()
+        page.get_by_role('button',name='بدء الاستيراد الكامل',exact=True).click()
         batch_id=page.locator('[name=audit-batch]').input_value()
-        assert page.get_by_role('button',name='بدء التدقيق',exact=True).is_visible()
+        page.get_by_role('button',name='بدء التدقيق',exact=True).wait_for()
         page.get_by_role('button',name='بدء التدقيق',exact=True).click()
         page.get_by_role('heading',name='نتيجة التدقيق — المرحلة الأولى',exact=True).wait_for()
         page.get_by_text('مطابق مبدئي: 4',exact=False).wait_for()

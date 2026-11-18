@@ -32,7 +32,7 @@ def linked_mapping():
     return payload
 
 
-def import_sample(api,updates=None,at=None):
+def import_sample(api,updates=None,at=None,expect_invalid=False):
     raw=sample_workbook(at)
     if updates:
         book=load_workbook(BytesIO(raw));sheet=book.active
@@ -45,6 +45,10 @@ def import_sample(api,updates=None,at=None):
     assert response.status_code==200,response.text
     response=api.client.post(base+'/resume',headers=api.headers['root'])
     assert response.status_code==200,response.text
+    if expect_invalid:
+        body=response.json();assert body['status']=='invalid_source',body
+        assert body['rejected'][0]['locator']['row']==2 and body['rejected'][0]['reason']
+        return body,batch,doc,raw
     assert response.json()['reference_check']['summary']['total_lines']==4
     from tests.workspace_v2.invoice_fixtures import attach_invoices
     attach_invoices(api,batch)
@@ -57,7 +61,7 @@ def import_sample(api,updates=None,at=None):
 def first(api,result):
     with Session(api.engine) as db:
         identities=set(db.scalars(select(ClaimEntry.id).where(ClaimEntry.organization_id==api.organization_id,
-            ClaimEntry.batch_id==result['batch_id'],ClaimEntry.claim_reference=='SYN-INVOICE-1',ClaimEntry.service_code=='SYN زيارة طبيب')))
+            ClaimEntry.batch_id==result['batch_id'],ClaimEntry.claim_reference=='INV-1001',ClaimEntry.service_code=='زيارة طبيب')))
     return next(r for r in result['rows'] if r['line_id'] in identities)
 
 
@@ -75,8 +79,8 @@ def test_category_service_network_and_provider_price_are_resolved_automatically(
     assert result['summary']=={'total_lines':4,'MATCHED':4,'REVIEW_REQUIRED':0,'BLOCKED':0}
     calculations=[r['calculation'] for r in result['rows']]
     values={(c['category_code'],c['service_type'],c['network']):(c['beneficiary_copay_percent'],c['expected_net']) for c in calculations}
-    assert values=={('B','visit','in_network'):('10','900.00'),('B','lab','in_network'):('30','140.00'),
-        ('C','visit','in_network'):('50','500.00'),('B','visit','out_of_network'):('30','840.00')}
+    assert values=={('أساسي','visit','in_network'):('10','900.00'),('أساسي','lab','in_network'):('30','140.00'),
+        ('تكميلي','visit','in_network'):('50','500.00'),('أساسي','visit','out_of_network'):('30','840.00')}
     assert all(c['copay_deducted_again'] is False for c in calculations)
     assert not result['audit_completed'] and not result['financially_final']
     assert all({'contract','regulation','beneficiary_enrollment','category','provider','service','provider_tariff','copay_rule'}<=set(r['references']) for r in result['rows'])
@@ -84,7 +88,7 @@ def test_category_service_network_and_provider_price_are_resolved_automatically(
 
 @pytest.mark.parametrize('updates,code',[
     ({(2,'اسم المستفيد'):'SYN شخص آخر'},'beneficiary_name'),
-    ({(2,'الدرجة'):'C'},'source_category'),
+    ({(2,'الدرجة'):'تكميلي'},'source_category'),
     ({(2,'نسبة التحمل'):'50'},'copay_percent'),
     ({(2,'إجمالي التحمل'):'200'},'copay_amount'),
     ({(2,'الصافي'):'800'},'net_amount'),
@@ -101,12 +105,16 @@ def test_source_discrepancies_require_review_without_changing_original(linked,up
         assert source.sha256==sha256(raw).hexdigest() and registry.store().get(source.storage_key,source.sha256)==raw
 
 
-@pytest.mark.parametrize('updates',[
-    {(2,'الرقم التأميني'):'SYN-UNKNOWN'}, {(2,'مقدم الخدمة'):'SYN-UNKNOWN'},
-    {(2,'الخدمة'):'SYN-UNKNOWN'}, {(2,'المطلوب'):'not-a-number'},
-    {(2,'المطلوب'):'1000%'}, {(2,'المطلوب'):'1,00'},
+@pytest.mark.parametrize('updates,invalid_source',[
+    ({(2,'الرقم التأميني'):'SYN-UNKNOWN'},False), ({(2,'مقدم الخدمة'):'SYN-UNKNOWN'},False),
+    ({(2,'الخدمة'):'SYN-UNKNOWN'},False), ({(2,'المطلوب'):'not-a-number'},True),
+    ({(2,'المطلوب'):'1000%'},True), ({(2,'المطلوب'):'1,00'},True),
 ])
-def test_missing_or_invalid_sources_are_held_not_financially_rejected(linked,updates):
+def test_missing_or_invalid_sources_are_held_not_financially_rejected(linked,updates,invalid_source):
+    if invalid_source:
+        result,_,_,_=import_sample(linked,updates,expect_invalid=True)
+        assert result['status']=='invalid_source' and result['imported_count']==0
+        return
     result,_,_,_=import_sample(linked,updates)
     row=next(r for r in result['rows'] if r['status']=='BLOCKED')
     assert not row['financially_final'] and any(c['status']=='hold' for c in row['checks'])

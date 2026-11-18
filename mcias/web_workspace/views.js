@@ -1135,8 +1135,8 @@ function catalog(ctx) {
     const card = panel(
         L("رفع مصدر أصلي", "Upload original source"),
         L(
-          "Excel، CSV، PDF، PNG، JPEG حتى 20 MiB. يحفظ الخادم الأصل والبصمة ويقرر الاستخراج أو الحجر.",
-          "Excel, CSV, PDF, PNG, JPEG up to 20 MiB. The backend preserves originals and fingerprints and decides extraction or quarantine.",
+          "Excel، CSV، PDF، PNG، JPEG حتى 50 MiB. يحفظ الخادم الأصل والبصمة ويقرر الاستخراج أو الحجر.",
+          "Excel, CSV, PDF, PNG, JPEG up to 50 MiB. The backend preserves originals and fingerprints and decides extraction or quarantine.",
         ),
         "ingestion",
       ),
@@ -1159,17 +1159,13 @@ function catalog(ctx) {
       e.preventDefault();
       if (submit.disabled) return;
       const file = f.input.files[0];
-      if (!file || file.size === 0 || file.size > 20 * 1024 * 1024) {
-        output.replaceChildren(
-          errorState(
-            new Error(
-              L(
-                "اختر ملفًا غير فارغ لا يتجاوز 20 MiB",
-                "Select a nonempty file no larger than 20 MiB",
-              ),
-            ),
-          ),
+      if (!file || file.size === 0 || file.size > 50 * 1024 * 1024) {
+        const message = L(
+          "اختر ملفًا غير فارغ لا يتجاوز 50 MiB",
+          "Select a nonempty file no larger than 50 MiB",
         );
+        output.replaceChildren(errorState(new Error(message)));
+        toast(message);
         return;
       }
       submit.disabled = true;
@@ -1184,6 +1180,7 @@ function catalog(ctx) {
         load();
       } catch (err) {
         output.replaceChildren(errorState(err));
+        toast(err.message);
       } finally {
         submit.disabled = ctx.demo;
       }

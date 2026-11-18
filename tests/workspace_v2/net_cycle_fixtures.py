@@ -27,8 +27,8 @@ HEADERS=['رقم الفاتورة','الرقم التأميني','اسم الم�
 
 
 def case_row(index=1,**overrides):
-    row={'invoice_reference':f'SYN-CYCLE-{index:06d}','beneficiary':'SYN-INS-EMPLOYEE',
-         'name':'SYN موظف تجريبي','category':'B','provider':'SYN-LINKED-HOSPITAL','service':'SYN-VISIT',
+    row={'invoice_reference':f'SYN-CYCLE-{index:06d}','beneficiary':'1000000001',
+         'name':'أحمد محمد','category':'أساسي','provider':'مستشفى النور','service':'زيارة طبيب',
          'date':date.today().strftime('%d/%m/%Y'),'unit':'1000','gross':'1000','percent':'10','copay':'100','net':'900'}
     row.update(overrides);return row
 
