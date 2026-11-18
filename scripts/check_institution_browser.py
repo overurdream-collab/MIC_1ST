@@ -10,7 +10,7 @@ from playwright.sync_api import sync_playwright, expect
 from sqlalchemy import select
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session
-from mcias.models import User, MFAFactor
+from mcias.models import User, MFAFactor, Permission
 from mcias.mfa import generate_totp
 from mcias.seed.laptop import ADMIN_PERMISSIONS
 from mcias.services import authorization_service as authority, access_service
@@ -40,6 +40,11 @@ def run(base_url, chromium):
             for values in READ_PERMISSIONS.values(): codes.update(values)
             codes.update(access_service.registry_codes())
             codes = sorted(code for code in codes if authority.allowed_in_group(code, 'institution_admin'))
+            existing = set(db.scalars(select(Permission.code)))
+            for code in codes:
+                if code not in existing:
+                    db.add(Permission(code=code)); existing.add(code)
+            db.flush()
             access_service.replace_grants(db, db.get(User, api.ids['root']), manager.id, codes,
                 access_service.revision(db, manager), 'Synthetic institution manager permissions')
             db.flush(); approve_fixture(db, api.organization_id, api.ids['root']); db.commit()
